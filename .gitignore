@@ -1,0 +1,28 @@
+# Claves
+.env
+
+# Datos del usuario: partidos, caché de la API, videos y salidas
+data/partidos.db
+data/partidos.db-journal
+data/cache/
+data/video/
+salidas/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editores y sistemas
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

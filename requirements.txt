@@ -1,0 +1,16 @@
+# Núcleo
+google-genai>=3.0,<4          # SDK de Gemini
+streamlit>=1.49              # la interfaz (hace falta >=1.49 por el parámetro width)
+openpyxl>=3.1                # el Excel con fórmulas
+PyYAML>=6.0                  # config.yaml
+pandas>=2.0                  # tablas de la interfaz
+
+# Video. Opcionales pero muy recomendados:
+#   yt-dlp  -> bajar videos de YouTube y de otras URLs, y averiguar cuánto duran
+#   ffmpeg  -> cortar los clips de la cola de revisión (NO se instala con pip:
+#              en Windows `winget install ffmpeg`, en Mac `brew install ffmpeg`,
+#              en Linux `sudo apt install ffmpeg`)
+yt-dlp>=2024.1
+
+# Tests
+pytest>=8.0
