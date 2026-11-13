@@ -19,6 +19,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# La consola de Windows no usa UTF-8 por defecto y se cae al imprimir
+# tildes o tildes de verificación: se fuerza acá.
+for _flujo in (sys.stdout, sys.stderr):
+    try:
+        _flujo.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 from rugby_stats.config import cargar_config  # noqa: E402
 from rugby_stats.gemini.cliente import ClienteGemini, ErrorGemini, Pedido  # noqa: E402
 from rugby_stats.gemini import video as video_mod  # noqa: E402

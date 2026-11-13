@@ -61,6 +61,23 @@ tabla, no un relato.
 
 ## Instalación
 
+### En Windows, con doble clic
+
+En la carpeta hay cinco archivos numerados. Se usan en orden, con doble clic:
+
+| Archivo | Qué hace |
+|---|---|
+| `1_instalar.bat` | Crea el entorno, instala las librerías y corre las pruebas. Si falta Python, lo instala y pide volver a abrirlo |
+| `2_poner_clave.bat` | Abre Google AI Studio y el archivo `.env` para pegar la clave |
+| `3_verificar.bat` | Chequea que la clave ande (y, si se le pasa un link, que pueda mirar video) |
+| `4_abrir.bat` | Abre la aplicación en el navegador |
+| `5_subir_a_github.bat` | Sube el repo a GitHub (hay que crear antes el repo vacío en github.com/new) |
+
+Si Windows muestra el cartel azul "Windows protegió su PC": **Más información →
+Ejecutar de todas formas**.
+
+### A mano, en cualquier sistema
+
 Hace falta **Python 3.11 o más nuevo**. Para ver si lo tenés, abrí una terminal
 y escribí:
 

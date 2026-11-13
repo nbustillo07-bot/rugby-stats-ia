@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,8 @@ def config() -> Config:
 def db() -> BaseDatos:
     """Una conexión por sesión de Streamlit."""
     if "db" not in st.session_state:
-        st.session_state.db = BaseDatos(RAIZ / "data" / "partidos.db")
+        ruta = os.environ.get("RUGBY_STATS_DB") or (RAIZ / "data" / "partidos.db")
+        st.session_state.db = BaseDatos(ruta)
     return st.session_state.db
 
 
