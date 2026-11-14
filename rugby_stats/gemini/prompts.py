@@ -303,7 +303,16 @@ def prompt_eventos(
     inicio_s: float,
     fin_s: float,
     relato: str = "",
+    solo_propio: bool = False,
 ) -> str:
+    bloque_foco = ""
+    if solo_propio:
+        bloque_foco = f"""
+FOCO: solo interesa {propio.nombre} (el equipo "propio"). Del rival devolvé \
+ÚNICAMENTE sus carries, sin número (dejalo en null): hacen falta porque cada \
+carry rival frenado es un tackle del equipo propio que hay que atribuir. \
+Ninguna otra acción del rival: ni pases, ni patadas, ni lines, ni tackles.
+"""
     bloque_relato = ""
     if relato.strip():
         bloque_relato = f"""
@@ -325,7 +334,7 @@ confirmar, usalo con confianza más baja y poné "relato" en la nota.
 {describir_plantel(jugadores_rivales, f"Plantel de {rival.nombre} (rival)")}
 
 {describir_fichas(fichas_propias, jugadores_propios)}
-{bloque_relato}
+{bloque_foco}{bloque_relato}
 {_tiempos(inicio_s, fin_s)}
 
 {_vocabulario_acciones()}
@@ -393,8 +402,16 @@ def prompt_contacto(
     inicio_s: float,
     fin_s: float,
     pista: str = "",
+    solo_propio: bool = False,
 ) -> str:
     bloque_pista = f"\nLo que se detectó a menor velocidad: {pista}\n" if pista else ""
+    if solo_propio:
+        bloque_pista += f"""
+FOCO: solo hace falta identificar a los jugadores de {propio.nombre} (el \
+equipo "propio"). Del rival alcanza con decir que es rival: dejá su número en \
+null y no gastes atención en reconocerlo. Toda tu atención va a cuál o cuáles \
+jugadores propios participan del contacto.
+"""
     return f"""{ENCABEZADO}
 
 {describir_equipos(propio, rival)}

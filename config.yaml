@@ -59,6 +59,13 @@ pasos:
   fichas: fuerte       # leer el número en la espalda
   contactos: fuerte    # quién tackleó y si el portador avanzó
 
+analisis:
+  # true  -> solo interesa el equipo propio. Del rival no se guarda ningún
+  #          evento ni se intenta saber qué jugador fue. Es más rápido, gasta
+  #          menos pedidos y deja mucho menos para revisar.
+  # false -> se registran las acciones de los dos equipos.
+  solo_equipo_propio: true
+
 # Las tres velocidades. fps = cuadros por segundo que se le mandan al modelo.
 # Gemini acepta de 0 (exclusivo) a 24. resolucion LOW ≈ 100 tokens por segundo
 # de video, HIGH ≈ 300: la alta se usa solo donde hace falta.

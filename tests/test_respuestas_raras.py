@@ -209,3 +209,95 @@ class TestRespuestasMalFormadas:
             100.0, partido, cfg, {6}, {10},
         )
         assert len([e for e in eventos if e.accion == "Tackle"]) == 1
+
+
+class TestSoloEquipoPropio:
+    """Cuando el rival no interesa: ni se guarda ni se identifica."""
+
+    def _cfg(self, cfg):
+        cfg._d["analisis"] = {"solo_equipo_propio": True}
+        return cfg
+
+    def test_los_eventos_del_rival_no_se_guardan(self, db, partido_cargado, cfg):
+        partido_cargado.analizar_hasta_s = 100.0
+        db.guardar_partido(partido_cargado)
+        cliente = ClienteSimulado()
+        cliente.respuestas["eventos"] = {"eventos": [
+            {"t_segundos": 10, "accion": "Pase", "resultado": "bueno",
+             "equipo": "propio", "numero": 9, "confianza": 0.9},
+            {"t_segundos": 20, "accion": "Pase", "resultado": "bueno",
+             "equipo": "rival", "numero": 9, "confianza": 0.9},
+            {"t_segundos": 30, "accion": "Patada", "resultado": "al touch",
+             "equipo": "rival", "numero": 10, "confianza": 0.9},
+        ]}
+        pipeline.correr(db, cliente, partido_cargado.id, self._cfg(cfg), pasos=["eventos"])
+        eventos = db.eventos(partido_cargado.id)
+        assert [e.t_segundos for e in eventos] == [10.0]
+        assert all(e.equipo == "Club A" for e in eventos)
+
+    def test_un_carry_rival_dispara_el_re_examen_para_atribuir_el_tackle(
+        self, partido_cargado, cfg
+    ):
+        """El carry rival no se guarda, pero ahí hay un tackle propio."""
+        partido_cargado.analizar_hasta_s = 100.0
+        cliente = ClienteSimulado()
+        cliente.respuestas["eventos"] = {"eventos": [
+            {"t_segundos": 40, "accion": "Carry", "resultado": "detenido",
+             "equipo": "rival", "numero": None, "confianza": 0.7},
+            {"t_segundos": 60, "accion": "Pase", "resultado": "bueno",
+             "equipo": "rival", "numero": None, "confianza": 0.7},
+        ]}
+        eventos, a_revisar = pasadas.pasada_eventos(
+            cliente, partido_cargado, [], [], {}, self._cfg(cfg)
+        )
+        assert eventos == []
+        assert [a["t_segundos"] for a in a_revisar] == [40.0]  # el pase no
+
+    def test_del_contacto_solo_quedan_los_eventos_propios(self, partido, cfg):
+        datos = {
+            "portador": 10, "portador_equipo": "rival",
+            "tackleadores": [6, 7], "tackleadores_equipo": "propio",
+            "avance_portador": "se_detiene", "confianza": 0.9,
+        }
+        eventos = pasadas._contacto_a_eventos(
+            datos, 100.0, partido, self._cfg(cfg), {6, 7}, set()
+        )
+        assert sorted((e.accion, e.jugador_numero) for e in eventos) == [
+            ("Tackle", 6), ("Tackle", 7)
+        ]
+
+    def test_cuando_el_portador_es_propio_queda_su_carry_y_no_los_tackles(
+        self, partido, cfg
+    ):
+        datos = {
+            "portador": 12, "portador_equipo": "propio",
+            "tackleadores": [], "tackleadores_equipo": "rival",
+            "avance_portador": "avanza", "metros_avance": 4.0, "confianza": 0.9,
+        }
+        eventos = pasadas._contacto_a_eventos(
+            datos, 100.0, partido, self._cfg(cfg), {12}, set()
+        )
+        assert [(e.accion, e.jugador_numero, e.resultado) for e in eventos] == [
+            ("Carry", 12, "avanza")
+        ]
+
+    def test_los_prompts_dicen_que_el_rival_no_interesa(self):
+        from rugby_stats.gemini import prompts
+        from rugby_stats.modelos import Equipo
+
+        a, b = Equipo(nombre="Club A"), Equipo(nombre="Club B")
+        ev = prompts.prompt_eventos(a, b, [], [], {}, 0, 60, solo_propio=True)
+        assert "solo interesa Club A" in ev
+        assert "carries" in ev
+        co = prompts.prompt_contacto(a, b, [], [], {}, 0, 4, solo_propio=True)
+        assert "solo hace falta identificar a los jugadores de Club A" in co
+        # Y por defecto no cambia nada.
+        assert "FOCO" not in prompts.prompt_eventos(a, b, [], [], {}, 0, 60)
+
+    def test_esta_activado_en_la_configuracion_del_repo(self):
+        from pathlib import Path
+
+        from rugby_stats.config import cargar_config
+
+        cfg = cargar_config(Path(__file__).resolve().parent.parent / "config.yaml")
+        assert cfg.solo_equipo_propio is True

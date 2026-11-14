@@ -354,6 +354,7 @@ def pasada_eventos(
                     ini,
                     fin,
                     relato,
+                    solo_propio=cfg.solo_equipo_propio,
                 ),
                 video_uri=_uri(partido),
                 inicio_s=ini,
@@ -375,6 +376,19 @@ def pasada_eventos(
                 continue
             # Dentro de la ventana, descontando el solape para no duplicar.
             if not (ini - 0.5 <= e.t_segundos <= fin + 0.5):
+                continue
+            if cfg.solo_equipo_propio and e.equipo == rival:
+                # Del rival no se guarda nada. Pero un carry o un tackle rival
+                # es un contacto en el que participa alguien del equipo
+                # propio: se manda a re-examinar para atribuirlo.
+                if e.accion in ACCIONES_DE_CONTACTO:
+                    a_revisar.append(
+                        {
+                            "t_segundos": e.t_segundos,
+                            "pista": f"{e.accion} del rival: falta saber qué "
+                            "jugador propio participó",
+                        }
+                    )
                 continue
             eventos.append(e)
             if _es_contacto_dudoso(e, cfg) or (
@@ -566,6 +580,7 @@ def revisar_contactos(
                         ini,
                         fin,
                         str(item.get("pista") or ""),
+                        solo_propio=cfg.solo_equipo_propio,
                     ),
                     video_uri=_uri(partido),
                     inicio_s=ini,
@@ -732,6 +747,10 @@ def _contacto_a_eventos(
             )
         )
 
+    if cfg.solo_equipo_propio:
+        # Del rival no se guarda nada. Lo que quedó sin equipo se conserva:
+        # va a la cola para que una persona diga de quién era.
+        eventos = [e for e in eventos if e.equipo != rival]
     return eventos
 
 

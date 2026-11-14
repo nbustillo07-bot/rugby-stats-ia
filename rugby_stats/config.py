@@ -137,6 +137,11 @@ class Config:
         return nivel if nivel in ("fuerte", "liviano") else "fuerte"
 
     @property
+    def solo_equipo_propio(self) -> bool:
+        """Si es True, del rival no se registra ni se identifica nada."""
+        return bool(self.get("analisis.solo_equipo_propio", False))
+
+    @property
     def archivo_cupos(self) -> Path:
         return self.dir_cache.parent / "cupos.json"
 
