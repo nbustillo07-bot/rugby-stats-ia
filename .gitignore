@@ -2,7 +2,8 @@
 .env
 
 # Datos del usuario: partidos, caché de la API, videos y salidas
-data/partidos.db
+data/*.db
+data/cupos.json
 data/partidos.db-journal
 data/cache/
 data/video/
