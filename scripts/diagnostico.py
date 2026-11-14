@@ -207,10 +207,13 @@ def main() -> int:
             prompt='Respondé únicamente con este JSON: {"ok": true}',
             esquema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
             etiqueta="diagnóstico texto",
+            # Es solo texto: si en 40 segundos no contestó, es la conexión.
+            timeout_s=40,
         ),
     )
     if not r["ok"]:
-        print("\n  La clave o el modelo no andan. No sigo con el video.")
+        print("\n  La clave, el modelo o la conexión no andan. No sigo con el video.")
+        print(f"  Motivo: {str(r.get('error'))[:300]}")
         return _guardar(d, cfg, url, propio, rival, origen_plantel, cortado=True)
 
     # -- 2. encontrar el reloj --------------------------------------------

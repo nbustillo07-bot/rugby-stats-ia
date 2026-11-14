@@ -63,6 +63,9 @@ class Pedido:
     # Si es True, no se manda el audio (no se puede pedir al modelo, pero sirve
     # para marcar en el caché que este pedido no depende del relato).
     solo_video: bool = True
+    # Límite de tiempo propio de este pedido, en segundos. Si es None vale el
+    # del cliente.
+    timeout_s: float | None = None
 
     def clave_cache(self, modelo: str) -> str:
         crudo = json.dumps(
@@ -265,11 +268,20 @@ class ClienteGemini:
         dir_cache: Path | str = "data/cache",
         usar_cache: bool = True,
         temperatura: float = 0.1,
+        timeout_s: float = 240.0,
     ):
         from google import genai  # import tardío: no hace falta en modo simulado
 
+        from google.genai import types
+
         self._genai = genai
-        self.cliente = genai.Client(api_key=api_key)
+        # Límite de tiempo por pedido, en milisegundos. Sin esto, si la
+        # conexión se cuelga (antivirus, firewall, wifi), el programa se queda
+        # esperando para siempre sin decir nada.
+        self.cliente = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=int(timeout_s * 1000)),
+        )
         self.modelo = modelo
         self.alternativas = list(alternativas or [])
         self.temperatura = temperatura
@@ -317,6 +329,8 @@ class ClienteGemini:
         # modelos lo aceptan.
         if p.video_uri and p.resolucion in _RESOLUCIONES:
             kwargs["media_resolution"] = p.resolucion
+        if p.timeout_s:
+            kwargs["http_options"] = types.HttpOptions(timeout=int(p.timeout_s * 1000))
         if p.esquema:
             kwargs["response_mime_type"] = "application/json"
             kwargs["response_schema"] = p.esquema
@@ -372,6 +386,13 @@ class ClienteGemini:
                         self.contadores.reintentos += 1
                         time.sleep(self.esperas[min(intento, len(self.esperas) - 1)])
                         continue
+                    if _es_de_conexion(exc):
+                        raise ErrorGemini(
+                            "No pude conectarme con Google "
+                            f"({type(exc).__name__}: {exc}). Puede ser el wifi, un "
+                            "antivirus o firewall que bloquea a Python, o que "
+                            "Google tardó demasiado en contestar."
+                        ) from exc
                     raise ErrorGemini(f"Error de la API: {exc}") from exc
 
                 self._modelo_en_uso = modelo
@@ -466,7 +487,18 @@ def _es_modelo_invalido(exc: Exception) -> bool:
 
 def _es_transitorio(exc: Exception) -> bool:
     t = _texto_error(exc)
-    return any(x in t for x in ("500", "503", "504", "deadline", "unavailable", "timeout"))
+    if _es_de_conexion(exc):
+        return False  # sin conexión no tiene sentido insistir cuatro veces
+    return any(x in t for x in ("500", "503", "504", "deadline", "unavailable"))
+
+
+def _es_de_conexion(exc: Exception) -> bool:
+    t = _texto_error(exc)
+    return any(
+        x in t
+        for x in ("timeout", "timed out", "connecterror", "connection", "getaddrinfo",
+                  "ssl", "certificate", "proxy", "network")
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -306,3 +306,34 @@ class TestCacheConElClienteReal:
             c.pedir(pedido_video())
         assert c.pedir(pedido_video()).json() == {"ok": True}
         assert len(vistos) == 2
+
+
+class TestConexion:
+    def test_si_la_conexion_se_cuelga_lo_dice_y_no_insiste(self, tmp_path):
+        """Antes se quedaba esperando para siempre, sin decir nada."""
+        intentos = []
+
+        def colgada(req, cuerpo):
+            intentos.append(1)
+            raise httpx.ReadTimeout("The read operation timed out")
+
+        c, _ = armar(tmp_path, colgada)
+        with pytest.raises(ErrorGemini) as exc:
+            c.pedir(Pedido(prompt="hola"))
+        assert "No pude conectarme con Google" in str(exc.value)
+        assert "antivirus" in str(exc.value)
+        assert len(intentos) <= 2  # una vez por modelo como mucho
+
+    def test_sin_internet_lo_dice(self, tmp_path):
+        def sin_red(req, cuerpo):
+            raise httpx.ConnectError("[Errno 11001] getaddrinfo failed")
+
+        c, _ = armar(tmp_path, sin_red)
+        with pytest.raises(ErrorGemini) as exc:
+            c.pedir(Pedido(prompt="hola"))
+        assert "No pude conectarme" in str(exc.value)
+
+    def test_el_cliente_tiene_limite_de_tiempo(self, tmp_path):
+        c = ClienteGemini(api_key="AQ.x", dir_cache=tmp_path, usar_cache=False)
+        opciones = c.cliente._api_client._http_options
+        assert opciones.timeout and opciones.timeout >= 60_000
