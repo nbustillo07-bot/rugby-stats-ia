@@ -169,8 +169,8 @@ def test_si_la_clave_no_anda_corta_y_lo_dice(entorno, monkeypatch):
 
 def test_usa_el_reloj_leido_para_ubicarse(entorno, monkeypatch):
     _, informe, _, _ = _correr(entorno, monkeypatch, _servidor)
-    # Leyó 08:30 al final de la ventana que arranca a los 600 s (612 s).
-    assert informe["desfase_reloj_s"] == pytest.approx(510 - 612)
+    # Leyó 08:30 al final de la ventana que arranca a los 900 s (912 s).
+    assert informe["desfase_reloj_s"] == pytest.approx(510 - 912)
 
 
 def test_el_contacto_se_prueba_sobre_un_evento_que_salio(entorno, monkeypatch):
@@ -227,3 +227,41 @@ def test_sin_clave_explica_que_hacer(tmp_path, monkeypatch, capsys):
     )
     assert mod.main() == 1
     assert "2_poner_clave.bat" in capsys.readouterr().out
+
+
+def test_si_el_modelo_principal_esta_saturado_sigue_con_otro(entorno, monkeypatch):
+    """Lo que pasó en la primera corrida real: el modelo gratis saturado."""
+
+    def saturado_el_principal(req):
+        if "gemini-3.8-flash" in str(req.url):
+            return httpx.Response(
+                503,
+                json={"error": {"code": 503, "status": "UNAVAILABLE",
+                                "message": "The model is overloaded. Please try again later."}},
+            )
+        return _servidor(req)
+
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    codigo, informe, _, _ = _correr(entorno, monkeypatch, saturado_el_principal)
+    assert informe["modelo_elegido"] == "gemini-3.6-flash"
+    assert informe["saturaciones"] > 0
+    primero = informe["pasos"][0]
+    assert not primero["ok"] and "saturad" in primero["error"]
+    assert any("overloaded" in e for e in primero["errores_de_google"])
+    # Y todo lo demás corrió con el modelo que sí respondía.
+    assert all(p["ok"] for p in informe["pasos"][1:])
+
+
+def test_el_informe_se_guarda_despues_de_cada_paso(entorno, monkeypatch):
+    """Si se cierra la ventana a la mitad, lo hecho tiene que quedar."""
+    vistos = []
+
+    def espia(req):
+        carpeta = entorno / "salidas" / "diagnostico"
+        vistos.append(len(list(carpeta.glob("*.json"))) if carpeta.exists() else 0)
+        return _servidor(req)
+
+    _correr(entorno, monkeypatch, espia)
+    assert vistos[0] == 0      # antes del primer pedido no hay nada
+    assert vistos[1] == 1      # al segundo ya está guardado el primero
+    assert max(vistos) == 1    # siempre el mismo archivo, no uno por paso

@@ -87,11 +87,17 @@ api:
   cache_dir: data/cache
 
 video:
-  # Al pasar una URL de YouTube con recorte, Gemini recorta los cuadros pero
-  # manda el audio del video entero en cada pedido. En un partido de 80
-  # minutos eso infla muchísimo los tokens. Si el video pasa de este largo,
-  # conviene bajarlo una vez y subirlo por la Files API.
-  descargar_si_dura_mas_de_s: 1200
+  # Bajar el video de YouTube y subirlo a Google en lugar de pasar el link.
+  # 0 = nunca (lo normal). Un número = bajar si el video dura más de esos
+  # segundos.
+  #
+  # Había reportes de que, al pasar un link de YouTube con recorte, viajaba el
+  # audio del video entero en cada pedido. En la prueba real del 14/11/2026 no
+  # pasó: 12 segundos de video costaron 829 tokens. Así que por defecto se
+  # pasa el link directo, que además es mucho más rápido para arrancar.
+  # Si el diagnóstico (6_prueba_real.bat) alguna vez muestra miles de tokens
+  # por segundo de video, poné acá 1200.
+  descargar_si_dura_mas_de_s: 0
   # Carpeta donde se guardan los videos bajados y los clips cortados.
   dir_trabajo: data/video
   # Largo del clip que se muestra en la cola de revisión.

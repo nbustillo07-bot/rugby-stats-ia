@@ -242,6 +242,7 @@ class Contadores:
     desde_cache: int = 0
     reintentos: int = 0
     errores_429: int = 0
+    saturaciones: int = 0
     tokens_entrada: int = 0
     tokens_salida: int = 0
     segundos_video: float = 0.0
@@ -249,7 +250,8 @@ class Contadores:
     def resumen(self) -> str:
         return (
             f"{self.pedidos} pedidos ({self.desde_cache} de caché), "
-            f"{self.reintentos} reintentos, {self.errores_429} cuotas, "
+            f"{self.reintentos} reintentos ({self.errores_429} por cuota, "
+            f"{self.saturaciones} por saturación), "
             f"{self.tokens_entrada:,} tokens de entrada"
         )
 
@@ -291,6 +293,11 @@ class ClienteGemini:
         self.cache = Cache(Path(dir_cache), usar_cache)
         self.contadores = Contadores()
         self._modelo_en_uso = modelo
+        #: Función opcional que recibe los avisos (reintentos, cambios de
+        #: modelo) para mostrarlos en pantalla.
+        self.al_avisar: Callable[[str], None] | None = None
+        #: Los errores que fue devolviendo Google, para el diagnóstico.
+        self.errores_vistos: list[str] = []
 
     # -- armado del pedido ------------------------------------------------
 
@@ -351,8 +358,11 @@ class ClienteGemini:
             m for m in self.alternativas if m != self._modelo_en_uso
         ]
         ultimo_error: Exception | None = None
+        ultimo_tipo = ""
 
-        for modelo in modelos:
+        for n_modelo, modelo in enumerate(modelos):
+            quedan_otros = n_modelo < len(modelos) - 1
+            saturado = 0
             for intento in range(self.max_reintentos + 1):
                 self.ritmo.esperar()
                 try:
@@ -363,29 +373,31 @@ class ClienteGemini:
                     )
                 except Exception as exc:  # noqa: BLE001 - el SDK tira varios tipos
                     ultimo_error = exc
+                    self.errores_vistos.append(
+                        f"{modelo}: {type(exc).__name__}: {str(exc)[:300]}"
+                    )
+                    espera = self.esperas[min(intento, len(self.esperas) - 1)]
+
                     if _es_429(exc):
+                        ultimo_tipo = "cuota"
                         self.contadores.errores_429 += 1
                         self.ritmo.bajar()
                         if intento < self.max_reintentos:
-                            espera = self.esperas[min(intento, len(self.esperas) - 1)]
-                            log.warning(
-                                "Cuota (%s). Espero %.0f s y reintento (%d/%d)",
-                                p.etiqueta or "sin etiqueta",
-                                espera,
-                                intento + 1,
-                                self.max_reintentos,
+                            self._avisar(
+                                f"Google dice que se pasó el límite gratis ({modelo}). "
+                                f"Espero {espera:.0f} s y pruebo de nuevo "
+                                f"({intento + 1}/{self.max_reintentos})."
                             )
                             self.contadores.reintentos += 1
                             time.sleep(espera)
                             continue
                         break  # probar el modelo siguiente
+
                     if _es_modelo_invalido(exc):
-                        log.warning("El modelo %s no está disponible, pruebo otro", modelo)
+                        ultimo_tipo = "modelo"
+                        self._avisar(f"El modelo {modelo} no está disponible.")
                         break
-                    if intento < self.max_reintentos and _es_transitorio(exc):
-                        self.contadores.reintentos += 1
-                        time.sleep(self.esperas[min(intento, len(self.esperas) - 1)])
-                        continue
+
                     if _es_de_conexion(exc):
                         raise ErrorGemini(
                             "No pude conectarme con Google "
@@ -393,8 +405,33 @@ class ClienteGemini:
                             "antivirus o firewall que bloquea a Python, o que "
                             "Google tardó demasiado en contestar."
                         ) from exc
+
+                    if _es_transitorio(exc):
+                        ultimo_tipo = "saturado"
+                        saturado += 1
+                        self.contadores.saturaciones += 1
+                        # Si hay otro modelo para probar, no se insiste mucho
+                        # con uno que está saturado: se pasa al siguiente.
+                        tope = 2 if quedan_otros else self.max_reintentos
+                        if saturado <= tope and intento < self.max_reintentos:
+                            self._avisar(
+                                f"Google contestó que {modelo} está saturado. "
+                                f"Espero {espera:.0f} s y pruebo de nuevo "
+                                f"({saturado}/{tope})."
+                            )
+                            self.contadores.reintentos += 1
+                            time.sleep(espera)
+                            continue
+                        if quedan_otros:
+                            self._avisar(
+                                f"{modelo} sigue saturado: pruebo con {modelos[n_modelo + 1]}."
+                            )
+                        break
+
                     raise ErrorGemini(f"Error de la API: {exc}") from exc
 
+                if modelo != self._modelo_en_uso:
+                    self._avisar(f"Sigo con el modelo {modelo}.")
                 self._modelo_en_uso = modelo
                 self.ritmo.recuperar()
                 r = self._a_respuesta(bruta, p, modelo)
@@ -408,10 +445,30 @@ class ClienteGemini:
                     self.contadores.segundos_video += max(0.0, p.fin_s - p.inicio_s)
                 return r
 
+        if ultimo_tipo == "saturado":
+            raise ErrorGemini(
+                "Google contestó que sus modelos están saturados y no pudo "
+                f"atender el pedido ({ultimo_error}). No es un problema de tu "
+                "cuenta ni de tu compu: suele pasar en horas pico del servicio "
+                "gratis. Probá de nuevo en un rato; lo ya hecho queda guardado."
+            )
         raise CuotaAgotada(
             "No pude completar el pedido con ningún modelo. "
             f"Último error: {ultimo_error}. Revisá la cuota en Google AI Studio."
         )
+
+    def _avisar(self, texto: str) -> None:
+        """Cuenta en voz alta lo que está pasando mientras se espera.
+
+        Sin esto, un reintento de dos minutos se ve igual que un programa
+        colgado.
+        """
+        log.warning(texto)
+        if self.al_avisar is not None:
+            try:
+                self.al_avisar(texto)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _a_respuesta(self, bruta: Any, p: Pedido, modelo: str) -> Respuesta:
         texto = getattr(bruta, "text", None) or ""
@@ -489,10 +546,17 @@ def _es_transitorio(exc: Exception) -> bool:
     t = _texto_error(exc)
     if _es_de_conexion(exc):
         return False  # sin conexión no tiene sentido insistir cuatro veces
-    return any(x in t for x in ("500", "503", "504", "deadline", "unavailable"))
+    return any(
+        x in t
+        for x in ("500", "502", "503", "504", "deadline", "unavailable", "overloaded",
+                  "internal")
+    )
 
 
 def _es_de_conexion(exc: Exception) -> bool:
+    # Si Google llegó a contestar con un código, no es la conexión.
+    if isinstance(getattr(exc, "code", None), int):
+        return False
     t = _texto_error(exc)
     return any(
         x in t

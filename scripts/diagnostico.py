@@ -65,13 +65,16 @@ class Diagnostico:
         self.uri = uri
         self._clave = clave
         self.pasos: list[dict] = []
+        self.al_terminar_paso = None
+        self.modelo_elegido = ""
+        cliente.al_avisar = lambda texto: print(f"      ({self._limpio(texto)})", flush=True)
 
     def _limpio(self, texto: str) -> str:
         """Por las dudas: la clave no sale en ningún archivo."""
         return texto.replace(self._clave, "<CLAVE>") if self._clave else texto
 
     def paso(self, nombre: str, pedido: Pedido) -> dict:
-        print(f"  · {nombre}…", end="", flush=True)
+        print(f"  · {nombre}…", flush=True)
         registro: dict = {
             "paso": nombre,
             "inicio_s": pedido.inicio_s,
@@ -81,6 +84,18 @@ class Diagnostico:
             "largo_prompt": len(pedido.prompt),
         }
         t0 = time.monotonic()
+        reintentos_antes = self.cliente.contadores.reintentos
+        errores_antes = len(self.cliente.errores_vistos)
+
+        def cerrar() -> None:
+            registro["reintentos"] = self.cliente.contadores.reintentos - reintentos_antes
+            registro["errores_de_google"] = [
+                self._limpio(e) for e in self.cliente.errores_vistos[errores_antes:]
+            ]
+            self.pasos.append(registro)
+            if self.al_terminar_paso:
+                self.al_terminar_paso()
+
         try:
             r = self.cliente.pedir(pedido)
         except Exception as exc:  # noqa: BLE001 - queremos anotar cualquier cosa
@@ -89,8 +104,8 @@ class Diagnostico:
             registro["error"] = self._limpio(str(exc))[:3000]
             registro["traza"] = self._limpio(traceback.format_exc())[-3000:]
             registro["segundos"] = round(time.monotonic() - t0, 1)
-            print(f" FALLÓ ({registro['error_tipo']})")
-            self.pasos.append(registro)
+            print(f"    FALLÓ: {registro['error'][:220]}")
+            cerrar()
             return registro
 
         registro["segundos"] = round(time.monotonic() - t0, 1)
@@ -104,13 +119,16 @@ class Diagnostico:
         try:
             registro["json"] = r.json()
             registro["ok"] = True
-            print(f" ok ({registro['segundos']} s, {r.tokens_entrada or '?'} tokens)")
+            print(
+                f"    ok ({registro['segundos']} s, {r.tokens_entrada or '?'} tokens, "
+                f"modelo {r.modelo})"
+            )
         except Exception as exc:  # noqa: BLE001
             registro["ok"] = False
             registro["error_tipo"] = "RespuestaNoEsJSON"
             registro["error"] = str(exc)[:500]
-            print(" contestó, pero no es JSON válido")
-        self.pasos.append(registro)
+            print("    contestó, pero no es JSON válido")
+        cerrar()
         return registro
 
 
@@ -191,30 +209,57 @@ def main() -> int:
         modelo=cfg.modelo,
         alternativas=cfg.modelos_alternativos,
         rpm=cfg.rpm_inicial,
-        esperas_429=cfg.esperas_429,
-        max_reintentos=cfg.max_reintentos,
+        # Esperas cortas: acá interesa saber rápido qué anda, no insistir.
+        esperas_429=[5, 15, 30],
+        max_reintentos=3,
         dir_cache=cfg.dir_cache,
         usar_cache=False,  # el diagnóstico siempre va de verdad a la API
         temperatura=cfg.temperatura,
     )
     d = Diagnostico(cliente, url, cfg.api_key or "")
 
-    # -- 1. texto ----------------------------------------------------------
-    print("1. La clave y el modelo")
-    r = d.paso(
-        "texto simple",
-        Pedido(
-            prompt='Respondé únicamente con este JSON: {"ok": true}',
-            esquema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
-            etiqueta="diagnóstico texto",
-            # Es solo texto: si en 40 segundos no contestó, es la conexión.
-            timeout_s=40,
-        ),
+    sello = datetime.now().strftime("%Y%m%d_%H%M%S")
+    d.al_terminar_paso = lambda: _guardar(
+        d, cfg, url, propio, rival, origen_plantel, sello=sello, parcial=True
     )
-    if not r["ok"]:
-        print("\n  La clave, el modelo o la conexión no andan. No sigo con el video.")
-        print(f"  Motivo: {str(r.get('error'))[:300]}")
-        return _guardar(d, cfg, url, propio, rival, origen_plantel, cortado=True)
+
+    # -- 1. qué modelo está respondiendo ----------------------------------
+    print("1. La clave, y qué modelo gratis está respondiendo ahora")
+    candidatos = [cfg.modelo] + [m for m in cfg.modelos_alternativos if m != cfg.modelo]
+    alternativas_originales = list(cliente.alternativas)
+    cliente.alternativas = []  # cada modelo se prueba solo, sin saltar a otro
+    mejor: tuple[float, str] | None = None
+    for modelo in candidatos:
+        cliente.modelo = modelo
+        cliente._modelo_en_uso = modelo
+        r = d.paso(
+            f"texto simple con {modelo}",
+            Pedido(
+                prompt='Respondé únicamente con este JSON: {"ok": true}',
+                esquema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
+                etiqueta="diagnóstico texto",
+                timeout_s=90,
+            ),
+        )
+        if r["ok"] and (mejor is None or r["segundos"] < mejor[0]):
+            mejor = (r["segundos"], modelo)
+        if r["ok"] and r["segundos"] < 20 and not r.get("reintentos"):
+            break  # contestó rápido y a la primera: alcanza
+        if not r["ok"] and "api key" in str(r.get("error", "")).lower():
+            print("\n  Google rechazó la clave. Revisala con 2_poner_clave.bat.")
+            break  # con la clave mal no tiene sentido probar otros modelos
+
+    if mejor is None:
+        print("\n  Ningún modelo contestó. No sigo con el video.")
+        return _guardar(
+            d, cfg, url, propio, rival, origen_plantel, sello=sello, cortado=True
+        )
+    elegido = mejor[1]
+    cliente.modelo = elegido
+    cliente._modelo_en_uso = elegido
+    cliente.alternativas = [m for m in candidatos if m != elegido]
+    d.modelo_elegido = elegido
+    print(f"\n  Sigo con {elegido}, que es el que mejor respondió.")
 
     # -- 2. encontrar el reloj --------------------------------------------
     print("\n2. ¿Puede mirar el video? ¿Dónde está el reloj del partido?")
@@ -222,7 +267,7 @@ def main() -> int:
     puntos = (
         [reglas.segundos_desde_reloj(args.desde) or 0.0]
         if args.desde
-        else [600.0, 1500.0, 2400.0, 3300.0]
+        else [900.0, 2100.0]
     )
     video_anda = False
     for t in puntos:
@@ -257,7 +302,9 @@ def main() -> int:
 
     if not video_anda:
         print("\n  Ningún pedido de video funcionó. Mirá el archivo de diagnóstico.")
-        return _guardar(d, cfg, url, propio, rival, origen_plantel, cortado=True)
+        return _guardar(
+            d, cfg, url, propio, rival, origen_plantel, sello=sello, cortado=True
+        )
 
     # Elegir dónde probar: si se leyó el reloj, un rato de juego conocido.
     desfase = None
@@ -353,16 +400,21 @@ def main() -> int:
         ),
     )
 
-    return _guardar(d, cfg, url, propio, rival, origen_plantel, desfase=desfase)
+    return _guardar(
+        d, cfg, url, propio, rival, origen_plantel, sello=sello, desfase=desfase
+    )
 
 
 def _guardar(
     d: Diagnostico, cfg, url, propio, rival, origen_plantel,
     cortado: bool = False, desfase: float | None = None,
+    sello: str | None = None, parcial: bool = False,
 ) -> int:
+    """Escribe el informe. Con ``parcial=True`` lo hace calladito, después de
+    cada paso: si la corrida se corta o se cierra la ventana, lo hecho queda."""
     carpeta = cfg.dir_salidas / "diagnostico"
     carpeta.mkdir(parents=True, exist_ok=True)
-    sello = datetime.now().strftime("%Y%m%d_%H%M%S")
+    sello = sello or datetime.now().strftime("%Y%m%d_%H%M%S")
 
     try:
         import google.genai as genai_mod
@@ -384,10 +436,13 @@ def _guardar(
         "python": platform.python_version(),
         "sistema": platform.platform(),
         "desfase_reloj_s": desfase,
+        "modelo_elegido": getattr(d, "modelo_elegido", ""),
+        "termino": not parcial,
         "cortado_antes_de_terminar": cortado,
         "pasos_bien": len(bien),
         "pasos_mal": len(mal),
         "errores_429": contadores.errores_429,
+        "saturaciones": contadores.saturaciones,
         "reintentos": contadores.reintentos,
         "pasos": d.pasos,
     }
@@ -395,6 +450,9 @@ def _guardar(
     ruta_json.write_text(
         json.dumps(informe, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
+
+    if parcial:
+        return 0
 
     lineas = [
         "rugby-stats-ia — diagnóstico contra la API real",
@@ -412,6 +470,8 @@ def _guardar(
             extra += f"  {p['tokens_entrada']:,} tokens"
         if p.get("tokens_por_segundo_de_video"):
             extra += f"  ({p['tokens_por_segundo_de_video']:.0f}/s de video)"
+        if p.get("reintentos"):
+            extra += f"  [{p['reintentos']} reintentos]"
         lineas.append(f"{marca} {p['paso']:42} {p.get('segundos', '?'):>6} s{extra}")
         if not p.get("ok"):
             lineas.append(f"      -> {p.get('error_tipo')}: {str(p.get('error'))[:400]}")
@@ -426,6 +486,13 @@ def _guardar(
             "ATENCIÓN: hay pedidos que gastan muchísimos tokens por segundo de video.",
             "Es el audio del video entero viajando en cada pedido de YouTube.",
             "Para un partido completo conviene bajar el video (yt-dlp) y subirlo.",
+            "",
+        ]
+    if contadores.saturaciones:
+        lineas += [
+            f"Google contestó 'saturado' {contadores.saturaciones} veces. No es tu",
+            "cuenta ni tu compu: es el servicio gratis en hora pico. Conviene",
+            "analizar en otro horario (a la mañana suele andar mejor).",
             "",
         ]
     lineas.append(f"Detalle completo: {ruta_json.name}")
