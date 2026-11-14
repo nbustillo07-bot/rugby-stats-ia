@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -151,7 +152,12 @@ class BaseDatos:
     def __init__(self, ruta: str | Path = "data/partidos.db"):
         self.ruta = Path(ruta)
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
-        self.con = sqlite3.connect(str(self.ruta))
+        # check_same_thread=False: Streamlit corre cada interacción en un hilo
+        # distinto, y la conexión se guarda en la sesión. Sin esto, el segundo
+        # clic revienta con "SQLite objects created in a thread can only be
+        # used in that same thread". Los accesos se serializan con un candado.
+        self.con = sqlite3.connect(str(self.ruta), check_same_thread=False)
+        self._candado = threading.RLock()
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA foreign_keys = ON")
         self.con.executescript(ESQUEMA)
@@ -168,12 +174,13 @@ class BaseDatos:
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
-        try:
-            yield self.con
-            self.con.commit()
-        except Exception:
-            self.con.rollback()
-            raise
+        with self._candado:
+            try:
+                yield self.con
+                self.con.commit()
+            except Exception:
+                self.con.rollback()
+                raise
 
     # ------------------------------------------------------------------
     # Partidos

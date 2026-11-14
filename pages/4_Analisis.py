@@ -125,10 +125,10 @@ cols = st.columns(2)
 for i, paso in enumerate(pipeline.PASOS):
     col = cols[i % 2]
     estado = hechos[paso]["estado"]
-    icono = {"listo": "✅", "corriendo": "⏳"}.get(estado, "⬜")
+    icono = {"listo": "✅ ", "corriendo": "⏳ "}.get(estado, "")
     detalle = hechos[paso]["detalle"]
     if col.checkbox(
-        f"{icono} {NOMBRES[paso]}",
+        f"{icono}{NOMBRES[paso]}",
         value=estado != "listo",
         key=f"paso_{paso}",
         help=detalle or None,

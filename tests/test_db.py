@@ -204,3 +204,48 @@ class TestCorrecciones:
         assert c.campo == "jugador_numero"
         assert c.valor_modelo == "23"
         assert c.momento  # se sella con la fecha solo
+
+
+class TestHilos:
+    """Streamlit corre cada clic en un hilo distinto del que abrió la base."""
+
+    def test_se_puede_usar_desde_otro_hilo(self, db, partido):
+        import threading
+
+        pid = db.guardar_partido(partido)
+        resultado: dict = {}
+
+        def desde_otro_hilo():
+            try:
+                resultado["partidos"] = len(db.partidos())
+                db.guardar_plantel(pid, hacer_plantel("Club A"))
+                resultado["jugadores"] = len(db.plantel(pid))
+            except Exception as exc:  # noqa: BLE001
+                resultado["error"] = exc
+
+        h = threading.Thread(target=desde_otro_hilo)
+        h.start()
+        h.join()
+        assert "error" not in resultado, resultado.get("error")
+        assert resultado == {"partidos": 1, "jugadores": 23}
+
+    def test_varios_hilos_escribiendo_a_la_vez_no_pierden_nada(self, db, partido):
+        import threading
+
+        pid = db.guardar_partido(partido)
+        errores: list = []
+
+        def escribir(n):
+            try:
+                for i in range(20):
+                    db.guardar_evento(pid, Evento(t_segundos=n * 100 + i, accion="Pase"))
+            except Exception as exc:  # noqa: BLE001
+                errores.append(exc)
+
+        hilos = [threading.Thread(target=escribir, args=(n,)) for n in range(5)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join()
+        assert errores == []
+        assert len(db.eventos(pid)) == 100

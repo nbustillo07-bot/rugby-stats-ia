@@ -70,8 +70,13 @@ for t in tarjetas:
 
         with col_video:
             if t.embed_url and partido.video.tipo == "youtube":
+                # Solo el pedacito del evento, en bucle: se ve varias veces
+                # sin tener que retroceder a mano.
                 st.video(
-                    partido.video.referencia, start_time=int(t.inicio_clip_s)
+                    partido.video.referencia,
+                    start_time=int(t.inicio_clip_s),
+                    end_time=int(t.fin_clip_s) + 1,
+                    loop=True,
                 )
             elif partido.video.ruta_local:
                 ruta = revision.preparar_clip(partido, t, cfg)
