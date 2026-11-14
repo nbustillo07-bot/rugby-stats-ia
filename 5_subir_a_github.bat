@@ -27,7 +27,7 @@ if not defined USUARIO (
 git config core.fileMode false
 git branch -M main
 git remote remove origin >nul 2>nul
-git remote add origin "https://github.com/%USUARIO%/rugby-stats-ia.git"
+git remote add origin "https://%USUARIO%@github.com/%USUARIO%/rugby-stats-ia.git"
 echo.
 echo Subiendo... Si se abre una ventana de GitHub pidiendo iniciar
 echo sesion, tocar "Sign in with your browser" y aceptar.
