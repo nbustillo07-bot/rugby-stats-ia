@@ -89,7 +89,9 @@ def barra_lateral() -> Partido | None:
         st.divider()
         st.markdown("### API")
         if cfg.hay_api_key:
-            st.success(f"Clave cargada · {cfg.modelo}")
+            st.success("Clave cargada")
+            if not st.session_state.get("forzar_simulado"):
+                mostrar_cupos()
         else:
             st.error("Sin GEMINI_API_KEY")
             st.caption(
@@ -107,6 +109,61 @@ def barra_lateral() -> Partido | None:
             st.warning("Simulado: los datos son inventados.")
 
     return partido
+
+
+def estado_cupos() -> list[dict[str, Any]]:
+    """Cuánto del cupo gratis de hoy lleva gastado cada modelo."""
+    from .gemini.cliente import Cupos
+
+    cfg = config()
+    cupos = Cupos(cfg.archivo_cupos)
+    topes = cfg.cupo_diario
+    filas = []
+    for nivel, modelos in (cfg.niveles or {}).items():
+        for m in modelos:
+            falta = cupos.proxima_renovacion([m]) if cupos.agotado(m) else None
+            filas.append(
+                {
+                    "nivel": nivel,
+                    "modelo": m,
+                    "usados": cupos.usados(m),
+                    "tope": topes.get(m),
+                    "agotado": falta is not None,
+                    "vuelve_en_h": round(falta / 3600, 1) if falta else None,
+                }
+            )
+    return filas
+
+
+def mostrar_cupos() -> None:
+    """Resumen del cupo de hoy, por nivel."""
+    filas = estado_cupos()
+    if not filas:
+        return
+    for nivel, titulo in (("fuerte", "Modelos fuertes"), ("liviano", "Modelos livianos")):
+        del_nivel = [f for f in filas if f["nivel"] == nivel]
+        if not del_nivel:
+            continue
+        tope = sum(f["tope"] or 0 for f in del_nivel)
+        # Un modelo agotado cuenta como usado entero, haya pasado por acá o no.
+        usados = sum(
+            (f["tope"] or f["usados"]) if f["agotado"] else f["usados"]
+            for f in del_nivel
+        )
+        quedan = max(0, tope - usados)
+        st.progress(
+            min(1.0, usados / tope) if tope else 0.0,
+            text=f"{titulo}: quedan ~{quedan} de {tope} pedidos de hoy",
+        )
+        agotados = [f for f in del_nivel if f["agotado"]]
+        if agotados and len(agotados) == len(del_nivel):
+            st.caption(
+                f"Sin cupo por hoy. Vuelve en ~{min(f['vuelve_en_h'] for f in agotados):.0f} h."
+            )
+    st.caption(
+        "Es una cuenta aproximada llevada por este programa; la oficial está en "
+        "[ai.dev/rate-limit](https://ai.dev/rate-limit)."
+    )
 
 
 def exigir_partido() -> Partido:

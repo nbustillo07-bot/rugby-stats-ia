@@ -62,17 +62,83 @@ class Config:
 
     # -- atajos con nombre ------------------------------------------------
 
+    # -- modelos -----------------------------------------------------------
+    #
+    # Forma nueva (config.yaml): "modelos.fuerte" y "modelos.liviano".
+    # Forma vieja: "modelo.nombre" y "modelo.alternativas". Se aceptan las dos.
+
+    @property
+    def niveles(self) -> dict[str, list[str]] | None:
+        """nivel -> modelos en orden, o None si la config es de la forma vieja."""
+        m = self.get("modelos")
+        if not isinstance(m, dict):
+            return None
+        niveles = {
+            nivel: [str(x) for x in (m.get(nivel) or [])]
+            for nivel in ("fuerte", "liviano")
+        }
+        niveles = {k: v for k, v in niveles.items() if v}
+        if not niveles:
+            return None
+        # Si falta un nivel, se usa el otro: mejor eso que quedarse sin modelo.
+        niveles.setdefault("fuerte", niveles.get("liviano", []))
+        niveles.setdefault("liviano", niveles.get("fuerte", []))
+        return niveles
+
     @property
     def modelo(self) -> str:
+        n = self.niveles
+        if n:
+            return n["fuerte"][0]
         return self.get("modelo.nombre", "gemini-3.8-flash")
 
     @property
     def modelos_alternativos(self) -> list[str]:
+        n = self.niveles
+        if n:
+            return n["fuerte"][1:]
         return list(self.get("modelo.alternativas", []) or [])
 
     @property
     def temperatura(self) -> float:
-        return float(self.get("modelo.temperatura", 0.1))
+        return float(
+            self.get("modelos.temperatura", self.get("modelo.temperatura", 0.1))
+        )
+
+    @property
+    def rpm_por_nivel(self) -> dict[str, float]:
+        d = self.get("modelos.pedidos_por_minuto") or {}
+        return {str(k): float(v) for k, v in d.items()} if isinstance(d, dict) else {}
+
+    @property
+    def cupo_diario(self) -> dict[str, int]:
+        """Pedidos por día de cada modelo, según lo que muestra AI Studio."""
+        d = self.get("modelos.cupo_diario") or {}
+        return {str(k): int(v) for k, v in d.items()} if isinstance(d, dict) else {}
+
+    @property
+    def respaldo_de_niveles(self) -> dict[str, str]:
+        """Qué hacer cuando se agota el cupo diario de los modelos fuertes."""
+        if self.get("modelos.si_se_agota_el_fuerte", "frenar") == "seguir_con_liviano":
+            return {"fuerte": "liviano"}
+        return {}
+
+    def nivel_de(self, paso: str) -> str:
+        """Qué nivel de modelo usa cada paso del análisis."""
+        por_defecto = {
+            "gruesa": "liviano",
+            "relato": "liviano",
+            "cambios": "liviano",
+            "eventos": "liviano",
+            "fichas": "fuerte",
+            "contactos": "fuerte",
+        }
+        nivel = self.get(f"pasos.{paso}", por_defecto.get(paso, "fuerte"))
+        return nivel if nivel in ("fuerte", "liviano") else "fuerte"
+
+    @property
+    def archivo_cupos(self) -> Path:
+        return self.dir_cache.parent / "cupos.json"
 
     def velocidad(self, nombre: str) -> Velocidad:
         d = self.get(f"velocidades.{nombre}") or {}

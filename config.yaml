@@ -4,15 +4,60 @@
 # camisetas y los jugadores se cargan por partido desde la interfaz.
 # Acá van las decisiones que valen para cualquier partido.
 
-modelo:
-  # Modelo de Gemini a usar. Verificado con free tier al 13/11/2026.
-  nombre: gemini-3.8-flash
-  # Si el principal da error de cuota o no existe, se prueban estos en orden.
-  alternativas:
+# Los modelos, en dos niveles.
+#
+# El plan gratis de Google da MUY pocos pedidos por día a los modelos buenos y
+# muchos a los livianos. Medido en la cuenta el 14/11/2026 (se ve en
+# https://ai.dev/rate-limit, columna RPD):
+#
+#     gemini-3.8-flash        5 por minuto     20 por día
+#     gemini-3.6-flash        5 por minuto     20 por día
+#     gemini-4-hydrogen       5 por minuto     20 por día
+#     gemini-3.5-flash-lite  15 por minuto    500 por día
+#     gemini-3.1-flash-lite  15 por minuto    500 por día
+#
+# Por eso el trabajo se reparte: lo que es volumen va a los livianos, y los
+# pocos pedidos de los buenos se guardan para lo difícil (ver "pasos").
+modelos:
+  # Para lo difícil: leer números de camiseta y resolver quién tackleó.
+  # Se usan en orden; cuando a uno se le acaba el cupo del día, sigue el otro.
+  fuerte:
+    - gemini-3.8-flash
     - gemini-3.6-flash
+    - gemini-4-hydrogen
+  # Para el volumen: separar juego de tiempo muerto, relato, eventos.
+  liviano:
     - gemini-3.5-flash-lite
+    - gemini-3.1-flash-lite
+  # Ritmo al que se le pide a cada nivel, por debajo del tope de Google para
+  # no rozarlo (y para no pasarse de tokens por minuto con video).
+  pedidos_por_minuto:
+    fuerte: 4
+    liviano: 8
+  # Solo informativo: se usa para mostrar cuánto cupo va quedando.
+  cupo_diario:
+    gemini-3.8-flash: 20
+    gemini-3.6-flash: 20
+    gemini-4-hydrogen: 20
+    gemini-3.5-flash-lite: 500
+    gemini-3.1-flash-lite: 500
+  # Qué hacer cuando se acaban los pedidos del día de los modelos fuertes:
+  #   frenar              -> corta ahí; al otro día se sigue desde donde quedó.
+  #                          Es lo que cuida la precisión.
+  #   seguir_con_liviano  -> termina el mismo día con los modelos livianos,
+  #                          que identifican peor. Más eventos van a revisión.
+  si_se_agota_el_fuerte: frenar
   # Temperatura baja: queremos datos repetibles, no creatividad.
   temperatura: 0.1
+
+# Qué nivel de modelo usa cada paso. "fuerte" gasta del cupo chico.
+pasos:
+  gruesa: liviano      # juego / tiempo muerto / marcador
+  relato: liviano      # transcripción
+  cambios: liviano
+  eventos: liviano     # primera detección; lo dudoso se re-examina después
+  fichas: fuerte       # leer el número en la espalda
+  contactos: fuerte    # quién tackleó y si el portador avanzó
 
 # Las tres velocidades. fps = cuadros por segundo que se le mandan al modelo.
 # Gemini acepta de 0 (exclusivo) a 24. resolucion LOW ≈ 100 tokens por segundo
@@ -75,13 +120,10 @@ puntos:
   try_penal: 7
 
 api:
-  # Pedidos por minuto con los que arranca la cola. No es un límite oficial:
-  # el límite real depende del modelo y de la cuenta, y se ve en AI Studio.
-  # Ante un 429 la cola baja el ritmo sola.
-  rpm_inicial: 8
-  # Espera en segundos ante error 429, en orden.
-  espera_429_s: [5, 15, 45, 120]
-  max_reintentos: 4
+  # Espera en segundos cuando Google pide ir más despacio o está saturado y
+  # no dice cuánto esperar. (Si lo dice, se le hace caso.)
+  espera_429_s: [5, 15, 45]
+  max_reintentos: 3
   # Caché en disco de cada respuesta, para que el análisis sea reanudable.
   cache: true
   cache_dir: data/cache

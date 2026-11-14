@@ -84,9 +84,12 @@ def entorno(tmp_path, monkeypatch):
     """Una copia de config.yaml en una carpeta temporal, con su .env."""
     shutil.copy(RAIZ / "config.yaml", tmp_path / "config.yaml")
     texto = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    (tmp_path / "config.yaml").write_text(
-        texto.replace("rpm_inicial: 8", "rpm_inicial: 1000000"), encoding="utf-8"
+    texto = texto.replace("    fuerte: 4\n", "    fuerte: 1000000\n").replace(
+        "    liviano: 8\n", "    liviano: 1000000\n"
     )
+    assert "1000000" in texto, "cambió el formato de config.yaml"
+    (tmp_path / "config.yaml").write_text(texto, encoding="utf-8")
+    monkeypatch.setattr("time.sleep", lambda s: None)
     (tmp_path / ".env").write_text(f"GEMINI_API_KEY={CLAVE}\n", encoding="utf-8")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("RUGBY_STATS_DB", str(tmp_path / "d.db"))

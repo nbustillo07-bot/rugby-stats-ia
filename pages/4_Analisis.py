@@ -10,6 +10,7 @@ import streamlit as st
 
 from rugby_stats import ui
 from rugby_stats.analisis import pipeline
+from rugby_stats.gemini.cliente import CupoDiarioAgotado
 
 st.set_page_config(page_title="Análisis · rugby-stats-ia", page_icon="🏉", layout="wide")
 ui.barra_lateral()
@@ -46,19 +47,49 @@ with st.expander("Cuánto video se va a analizar y qué cuesta", expanded=True):
             f"Tramo: **{ui.mm_ss(desde)} a {ui.mm_ss(hasta)}** "
             f"({largo / 60:.1f} minutos)."
         )
-        # Aproximado: resolución baja ≈ 100 tokens por segundo de video,
-        # alta ≈ 300. La pasada gruesa y la de juego van en baja; el
-        # re-examen de contactos, en alta pero sobre pocos segundos.
-        gruesa = largo * 100
-        juego = largo * 0.35 * 100  # solo el juego real, ~1/3 del total
-        contactos = largo * 0.35 / 25 * 4 * 300  # un contacto cada ~25 s, 4 s cada uno
-        total = gruesa + juego + contactos
-        st.caption(
-            f"Estimación muy gruesa de tokens de entrada: {total / 1_000_000:.1f}M "
-            "en total. Es una cuenta de servilleta sobre los 100 tokens por "
-            "segundo de video en resolución baja (300 en alta), no una medición: "
-            "el número real lo ves en Google AI Studio."
+        # Cuenta de servilleta de cuántos pedidos lleva. Lo que limita en el
+        # plan gratis no son los tokens sino los pedidos por día.
+        import math
+
+        juego = largo * 0.35                      # ~1/3 del video es juego real
+        v_j = cfg.velocidad("juego")
+        estimado = {
+            "gruesa": math.ceil(largo / cfg.velocidad("gruesa").ventana_s),
+            "relato": math.ceil(largo / 600),
+            "cambios": math.ceil(largo / 600),
+            "eventos": math.ceil(juego / v_j.ventana_s) + math.ceil(largo / 300),
+            "fichas": min(10, max(2, math.ceil(largo / 180))),
+            "contactos": math.ceil(juego / 25),   # un contacto cada ~25 s de juego
+        }
+        por_nivel = {"fuerte": 0, "liviano": 0}
+        for paso, n in estimado.items():
+            por_nivel[cfg.nivel_de(paso)] += n
+        topes = cfg.cupo_diario
+        tope = {
+            nivel: sum(topes.get(m, 0) for m in (cfg.niveles or {}).get(nivel, []))
+            for nivel in por_nivel
+        }
+        st.markdown(
+            f"Pedidos estimados: **~{por_nivel['fuerte']} a modelos fuertes** "
+            f"(el plan gratis da {tope['fuerte']} por día) y "
+            f"**~{por_nivel['liviano']} a modelos livianos** "
+            f"(da {tope['liviano']} por día)."
         )
+        st.caption(
+            "Es una estimación gruesa: el número real depende de cuánto juego y "
+            "cuántos contactos haya. Los fuertes se usan para las fichas y para "
+            "resolver quién tackleó; los livianos, para todo lo demás."
+        )
+        if tope["fuerte"] and por_nivel["fuerte"] > tope["fuerte"]:
+            dias = math.ceil(por_nivel["fuerte"] / tope["fuerte"])
+            st.warning(
+                f"Este tramo no entra en un día de cupo gratis de los modelos "
+                f"fuertes: serían unos {dias} días. No hace falta hacer nada "
+                "especial: cuando se acabe el cupo el análisis frena solo, y al "
+                "día siguiente apretás **Correr análisis** y sigue desde donde "
+                "quedó. (Si preferís terminar el mismo día con menos precisión, "
+                "poné `si_se_agota_el_fuerte: seguir_con_liviano` en config.yaml.)"
+            )
         from rugby_stats.gemini import video as video_mod
 
         if (
@@ -126,6 +157,13 @@ if col1.button("Correr análisis", type="primary", disabled=not elegidos):
                 base, cliente, partido.id, cfg,
                 pasos=elegidos, forzar=forzar, progreso=avance,
             )
+    except CupoDiarioAgotado as exc:
+        barra.empty()
+        st.warning(str(exc))
+        st.info(
+            "No se perdió nada. Mañana (o cuando se renueve el cupo) apretá de "
+            "nuevo **Correr análisis** con los mismos pasos tildados."
+        )
     except Exception as exc:  # noqa: BLE001
         barra.empty()
         st.error(f"Se cortó: {exc}")

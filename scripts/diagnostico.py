@@ -67,6 +67,7 @@ class Diagnostico:
         self.pasos: list[dict] = []
         self.al_terminar_paso = None
         self.modelo_elegido = ""
+        self.modelos_que_responden: list[str] = []
         cliente.al_avisar = lambda texto: print(f"      ({self._limpio(texto)})", flush=True)
 
     def _limpio(self, texto: str) -> str:
@@ -82,6 +83,7 @@ class Diagnostico:
             "fps": pedido.fps,
             "resolucion": pedido.resolucion if pedido.video_uri else None,
             "largo_prompt": len(pedido.prompt),
+            "nivel": pedido.nivel,
         }
         t0 = time.monotonic()
         reintentos_antes = self.cliente.contadores.reintentos
@@ -202,64 +204,81 @@ def main() -> int:
     print(f"\nVideo   : {url}")
     print(f"Equipos : {propio.nombre} vs {rival.nombre}")
     print(f"Plantel : {len(jug_propios)} jugadores, {origen_plantel}")
-    print(f"Modelo  : {cfg.modelo}\n")
+    print(f"Modelos : fuertes {', '.join((cfg.niveles or {}).get('fuerte', [cfg.modelo]))}")
+    print(f"          livianos {', '.join((cfg.niveles or {}).get('liviano', []))}\n")
 
+    niveles = cfg.niveles or {
+        "fuerte": [cfg.modelo] + cfg.modelos_alternativos,
+        "liviano": [cfg.modelo] + cfg.modelos_alternativos,
+    }
     cliente = ClienteGemini(
         api_key=cfg.api_key,
         modelo=cfg.modelo,
         alternativas=cfg.modelos_alternativos,
-        rpm=cfg.rpm_inicial,
+        rpm=8,
         # Esperas cortas: acá interesa saber rápido qué anda, no insistir.
         esperas_429=[5, 15, 30],
-        max_reintentos=3,
+        max_reintentos=2,
         dir_cache=cfg.dir_cache,
         usar_cache=False,  # el diagnóstico siempre va de verdad a la API
         temperatura=cfg.temperatura,
+        niveles=niveles,
+        rpm_por_nivel=cfg.rpm_por_nivel,
+        respaldo=cfg.respaldo_de_niveles,
+        archivo_cupos=cfg.archivo_cupos,
     )
     d = Diagnostico(cliente, url, cfg.api_key or "")
-
     sello = datetime.now().strftime("%Y%m%d_%H%M%S")
     d.al_terminar_paso = lambda: _guardar(
         d, cfg, url, propio, rival, origen_plantel, sello=sello, parcial=True
     )
 
-    # -- 1. qué modelo está respondiendo ----------------------------------
-    print("1. La clave, y qué modelo gratis está respondiendo ahora")
-    candidatos = [cfg.modelo] + [m for m in cfg.modelos_alternativos if m != cfg.modelo]
-    alternativas_originales = list(cliente.alternativas)
-    cliente.alternativas = []  # cada modelo se prueba solo, sin saltar a otro
-    mejor: tuple[float, str] | None = None
-    for modelo in candidatos:
-        cliente.modelo = modelo
-        cliente._modelo_en_uso = modelo
+    # -- 1. qué modelos están respondiendo --------------------------------
+    print("1. La clave, y qué modelos gratis responden ahora")
+    todos = list(dict.fromkeys(niveles["fuerte"] + niveles["liviano"]))
+    responden: list[str] = []
+    clave_mal = False
+    for modelo in todos:
+        if cliente.cupos.agotado(modelo):
+            falta = cliente.cupos.proxima_renovacion([modelo])
+            print(f"  · {modelo}: sin cupo por hoy"
+                  + (f" (vuelve en {falta / 3600:.0f} h)" if falta else "")
+                  + ". No lo pruebo.")
+            d.pasos.append({"paso": f"texto simple con {modelo}", "ok": False,
+                            "salteado": True, "error": "sin cupo por hoy (ya se sabía)"})
+            continue
+        cliente.niveles["_prueba"] = [modelo]
         r = d.paso(
             f"texto simple con {modelo}",
             Pedido(
                 prompt='Respondé únicamente con este JSON: {"ok": true}',
                 esquema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
                 etiqueta="diagnóstico texto",
-                timeout_s=90,
+                nivel="_prueba",
             ),
         )
-        if r["ok"] and (mejor is None or r["segundos"] < mejor[0]):
-            mejor = (r["segundos"], modelo)
-        if r["ok"] and r["segundos"] < 20 and not r.get("reintentos"):
-            break  # contestó rápido y a la primera: alcanza
-        if not r["ok"] and "api key" in str(r.get("error", "")).lower():
+        if r["ok"]:
+            responden.append(modelo)
+        elif "api key" in str(r.get("error", "")).lower():
             print("\n  Google rechazó la clave. Revisala con 2_poner_clave.bat.")
+            clave_mal = True
             break  # con la clave mal no tiene sentido probar otros modelos
+    cliente.niveles.pop("_prueba", None)
+    d.modelos_que_responden = responden
 
-    if mejor is None:
+    fuertes = [m for m in niveles["fuerte"] if m in responden]
+    livianos = [m for m in niveles["liviano"] if m in responden]
+    if clave_mal or not responden:
         print("\n  Ningún modelo contestó. No sigo con el video.")
         return _guardar(
             d, cfg, url, propio, rival, origen_plantel, sello=sello, cortado=True
         )
-    elegido = mejor[1]
-    cliente.modelo = elegido
-    cliente._modelo_en_uso = elegido
-    cliente.alternativas = [m for m in candidatos if m != elegido]
-    d.modelo_elegido = elegido
-    print(f"\n  Sigo con {elegido}, que es el que mejor respondió.")
+    print(f"\n  Fuertes que responden : {', '.join(fuertes) or 'ninguno'}")
+    print(f"  Livianos que responden: {', '.join(livianos) or 'ninguno'}")
+    if not fuertes:
+        print("  (Los pasos que piden un modelo fuerte van a fallar hoy: es el "
+              "cupo diario, no un error.)")
+    d.modelo_elegido = (fuertes or livianos)[0]
 
     # -- 2. encontrar el reloj --------------------------------------------
     print("\n2. ¿Puede mirar el video? ¿Dónde está el reloj del partido?")
@@ -290,7 +309,7 @@ def main() -> int:
                 fps=0.5,
                 resolucion="MEDIA_RESOLUTION_MEDIUM",
                 esquema=ESQUEMA_RELOJ,
-                etiqueta="diagnóstico reloj",
+                etiqueta="diagnóstico reloj", nivel=cfg.nivel_de("gruesa"),
             ),
         )
         if r["ok"]:
@@ -334,7 +353,7 @@ def main() -> int:
             prompt=prompts.prompt_gruesa(propio, rival, t_prueba, t_prueba + 120),
             video_uri=url, inicio_s=t_prueba, fin_s=t_prueba + 120,
             fps=v_gruesa.fps, resolucion=v_gruesa.resolucion,
-            esquema=prompts.ESQUEMA_GRUESA, etiqueta="diagnóstico gruesa",
+            esquema=prompts.ESQUEMA_GRUESA, etiqueta="diagnóstico gruesa", nivel=cfg.nivel_de("gruesa"),
         ),
     )
     d.paso(
@@ -343,7 +362,7 @@ def main() -> int:
             prompt=prompts.prompt_relato(jug_propios, jug_rivales, t_prueba, t_prueba + 120),
             video_uri=url, inicio_s=t_prueba, fin_s=t_prueba + 120,
             fps=0.1, resolucion="MEDIA_RESOLUTION_LOW",
-            esquema=prompts.ESQUEMA_RELATO, etiqueta="diagnóstico relato",
+            esquema=prompts.ESQUEMA_RELATO, etiqueta="diagnóstico relato", nivel=cfg.nivel_de("relato"),
         ),
     )
     d.paso(
@@ -352,7 +371,7 @@ def main() -> int:
             prompt=prompts.prompt_fichas(propio, jug_propios, t_prueba, t_prueba + 60),
             video_uri=url, inicio_s=t_prueba, fin_s=t_prueba + 60,
             fps=v_fichas.fps, resolucion=v_fichas.resolucion,
-            esquema=prompts.ESQUEMA_FICHAS, etiqueta="diagnóstico fichas",
+            esquema=prompts.ESQUEMA_FICHAS, etiqueta="diagnóstico fichas", nivel=cfg.nivel_de("fichas"),
         ),
     )
     r_ev = d.paso(
@@ -363,7 +382,7 @@ def main() -> int:
             ),
             video_uri=url, inicio_s=t_prueba, fin_s=t_prueba + 60,
             fps=v_juego.fps, resolucion=v_juego.resolucion,
-            esquema=prompts.ESQUEMA_EVENTOS, etiqueta="diagnóstico eventos",
+            esquema=prompts.ESQUEMA_EVENTOS, etiqueta="diagnóstico eventos", nivel=cfg.nivel_de("eventos"),
         ),
     )
 
@@ -385,7 +404,7 @@ def main() -> int:
             ),
             video_uri=url, inicio_s=max(0.0, t_contacto - 1.5), fin_s=t_contacto + 2.5,
             fps=v_contacto.fps, resolucion=v_contacto.resolucion,
-            esquema=prompts.ESQUEMA_CONTACTO, etiqueta="diagnóstico contacto",
+            esquema=prompts.ESQUEMA_CONTACTO, etiqueta="diagnóstico contacto", nivel=cfg.nivel_de("contactos"),
         ),
     )
     d.paso(
@@ -396,7 +415,7 @@ def main() -> int:
             ),
             video_uri=url, inicio_s=t_prueba, fin_s=t_prueba + 120,
             fps=0.5, resolucion="MEDIA_RESOLUTION_LOW",
-            esquema=prompts.ESQUEMA_CAMBIOS, etiqueta="diagnóstico cambios",
+            esquema=prompts.ESQUEMA_CAMBIOS, etiqueta="diagnóstico cambios", nivel=cfg.nivel_de("cambios"),
         ),
     )
 
@@ -424,7 +443,7 @@ def _guardar(
         version_sdk = "?"
 
     bien = [p for p in d.pasos if p.get("ok")]
-    mal = [p for p in d.pasos if not p.get("ok")]
+    mal = [p for p in d.pasos if not p.get("ok") and not p.get("salteado")]
     contadores = d.cliente.contadores
     informe = {
         "cuando": datetime.now().isoformat(timespec="seconds"),
@@ -437,6 +456,9 @@ def _guardar(
         "sistema": platform.platform(),
         "desfase_reloj_s": desfase,
         "modelo_elegido": getattr(d, "modelo_elegido", ""),
+        "modelos_que_responden": getattr(d, "modelos_que_responden", []),
+        "uso_de_hoy": dict(d.cliente.cupos.uso),
+        "agotados_hoy": sorted(d.cliente.cupos.agotados),
         "termino": not parcial,
         "cortado_antes_de_terminar": cortado,
         "pasos_bien": len(bien),
@@ -464,7 +486,7 @@ def _guardar(
         "",
     ]
     for p in d.pasos:
-        marca = "OK  " if p.get("ok") else "MAL "
+        marca = "OK  " if p.get("ok") else ("--  " if p.get("salteado") else "MAL ")
         extra = ""
         if p.get("tokens_entrada"):
             extra += f"  {p['tokens_entrada']:,} tokens"

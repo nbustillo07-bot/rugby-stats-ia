@@ -47,8 +47,9 @@ def main() -> int:
     cfg = cargar_config(args.config)
 
     print("Configuración")
-    print(f"  modelo principal : {cfg.modelo}")
-    print(f"  alternativas     : {', '.join(cfg.modelos_alternativos) or '—'}")
+    niveles = cfg.niveles or {"fuerte": [cfg.modelo] + cfg.modelos_alternativos}
+    for nivel, modelos in niveles.items():
+        print(f"  modelos {nivel:8}: {', '.join(modelos)}")
     print(f"  caché            : {cfg.dir_cache} ({'sí' if cfg.usar_cache else 'no'})")
     print(f"  ffmpeg / yt-dlp  : {video_mod.hay_ffmpeg()} / {video_mod.hay_ytdlp()}")
     print()
@@ -60,17 +61,11 @@ def main() -> int:
         return 1
     print("✓ Hay clave cargada.")
 
-    cliente = ClienteGemini(
-        api_key=cfg.api_key,
-        modelo=cfg.modelo,
-        alternativas=cfg.modelos_alternativos,
-        rpm=cfg.rpm_inicial,
-        esperas_429=cfg.esperas_429,
-        max_reintentos=cfg.max_reintentos,
-        dir_cache=cfg.dir_cache,
-        usar_cache=False,  # para verificar queremos ir de verdad a la API
-        temperatura=cfg.temperatura,
-    )
+    from rugby_stats.gemini.cliente import crear_cliente
+
+    cliente = crear_cliente(cfg)
+    cliente.cache.activa = False  # para verificar queremos ir de verdad a la API
+    cliente.al_avisar = lambda texto: print(f"    ({texto})")
 
     print("\nProbando una respuesta de texto…")
     try:
@@ -132,6 +127,7 @@ def main() -> int:
                     },
                 },
                 etiqueta="verificación de video",
+                nivel="liviano",
             )
         )
     except ErrorGemini as exc:

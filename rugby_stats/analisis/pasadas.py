@@ -121,6 +121,7 @@ def pasada_gruesa(
                 resolucion=v.resolucion,
                 esquema=prompts.ESQUEMA_GRUESA,
                 etiqueta=f"gruesa {ini:.0f}-{fin:.0f}",
+                nivel=cfg.nivel_de("gruesa"),
             )
         )
         crudos = _alinear_tiempos(
@@ -257,6 +258,7 @@ def pasada_fichas(
                 resolucion=v.resolucion,
                 esquema=prompts.ESQUEMA_FICHAS,
                 etiqueta=f"fichas {ini:.0f}-{fin:.0f}",
+                nivel=cfg.nivel_de("fichas"),
             )
         )
         crudas = _alinear_tiempos(
@@ -360,6 +362,7 @@ def pasada_eventos(
                 resolucion=v.resolucion,
                 esquema=prompts.ESQUEMA_EVENTOS,
                 etiqueta=f"eventos {ini:.0f}-{fin:.0f}",
+                nivel=cfg.nivel_de("eventos"),
             )
         )
         crudos = _alinear_tiempos(
@@ -571,6 +574,7 @@ def revisar_contactos(
                     resolucion=v.resolucion,
                     esquema=prompts.ESQUEMA_CONTACTO,
                     etiqueta=f"contacto {t:.1f} intento {intentos}",
+                nivel=cfg.nivel_de("contactos"),
                 )
             )
             leido = _json(r, f"contacto {t:.1f}")
@@ -765,6 +769,7 @@ def pasada_relato(
                 resolucion="MEDIA_RESOLUTION_LOW",
                 esquema=prompts.ESQUEMA_RELATO,
                 etiqueta=f"relato {ini:.0f}-{fin:.0f}",
+                nivel=cfg.nivel_de("relato"),
             )
         )
         crudos = _alinear_tiempos(
@@ -835,6 +840,7 @@ def pasada_cambios(
                 resolucion="MEDIA_RESOLUTION_LOW",
                 esquema=prompts.ESQUEMA_CAMBIOS,
                 etiqueta=f"cambios {ini:.0f}-{fin:.0f}",
+                nivel=cfg.nivel_de("cambios"),
             )
         )
         crudos = _alinear_tiempos(

@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,19 @@ class ErrorGemini(RuntimeError):
 
 class CuotaAgotada(ErrorGemini):
     """429 que no se resolvió después de todos los reintentos."""
+
+
+class CupoDiarioAgotado(CuotaAgotada):
+    """Se acabaron los pedidos gratis de hoy para todos los modelos del grupo.
+
+    No es un error del programa ni se arregla reintentando: hay que esperar a
+    que Google renueve el cupo. Lo hecho hasta acá queda guardado.
+    """
+
+    def __init__(self, mensaje: str, nivel: str = "", renueva_en_s: float | None = None):
+        super().__init__(mensaje)
+        self.nivel = nivel
+        self.renueva_en_s = renueva_en_s
 
 
 @dataclass
@@ -66,6 +80,9 @@ class Pedido:
     # Límite de tiempo propio de este pedido, en segundos. Si es None vale el
     # del cliente.
     timeout_s: float | None = None
+    # Qué grupo de modelos atiende este pedido: "fuerte" (pocos pedidos por
+    # día, para lo difícil) o "liviano" (muchos, para el volumen).
+    nivel: str = "fuerte"
 
     def clave_cache(self, modelo: str) -> str:
         crudo = json.dumps(
@@ -167,11 +184,11 @@ class _Ritmo:
     def intervalo_s(self) -> float:
         return 60.0 / self.rpm
 
-    def esperar(self, dormir: Callable[[float], None] = time.sleep) -> None:
+    def esperar(self, dormir: Callable[[float], None] | None = None) -> None:
         ahora = time.monotonic()
         falta = self._ultimo + self.intervalo_s - ahora
         if falta > 0:
-            dormir(falta)
+            (dormir or time.sleep)(falta)
         self._ultimo = time.monotonic()
 
     def bajar(self) -> None:
@@ -256,8 +273,145 @@ class Contadores:
         )
 
 
+class Cupos:
+    """Lleva la cuenta de los pedidos de hoy y de qué modelos están agotados.
+
+    Google no ofrece una forma de preguntar cuánto cupo queda, así que se
+    cuenta de este lado. Es una estimación: si la misma clave se usa desde
+    otro programa, Google lleva una cuenta distinta. Lo que manda siempre es
+    la respuesta de Google; esto sirve para mostrar por dónde va el gasto y
+    para no insistirle a un modelo que ya dijo que no.
+    """
+
+    def __init__(self, archivo: Path | None = None):
+        self.archivo = archivo
+        self.dia = self._hoy()
+        self.uso: dict[str, int] = {}
+        self.agotados: dict[str, float] = {}
+        self._leer()
+
+    @staticmethod
+    def _hoy() -> str:
+        # El cupo diario de Google se renueva a la medianoche del Pacífico.
+        import datetime as _dt
+
+        ahora = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=8)
+        return ahora.strftime("%Y-%m-%d")
+
+    def _leer(self) -> None:
+        if not self.archivo or not self.archivo.exists():
+            return
+        try:
+            d = json.loads(self.archivo.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        self.agotados = {
+            str(k): float(v) for k, v in (d.get("agotados") or {}).items()
+        }
+        if d.get("dia") == self.dia:
+            self.uso = {str(k): int(v) for k, v in (d.get("uso") or {}).items()}
+
+    def _guardar(self) -> None:
+        if not self.archivo:
+            return
+        try:
+            self.archivo.parent.mkdir(parents=True, exist_ok=True)
+            self.archivo.write_text(
+                json.dumps(
+                    {"dia": self.dia, "uso": self.uso, "agotados": self.agotados},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # llevar la cuenta es una ayuda, no puede frenar el análisis
+
+    def _cambio_de_dia(self) -> None:
+        hoy = self._hoy()
+        if hoy != self.dia:
+            self.dia = hoy
+            self.uso = {}
+
+    def anotar(self, modelo: str) -> None:
+        self._cambio_de_dia()
+        self.uso[modelo] = self.uso.get(modelo, 0) + 1
+        self._guardar()
+
+    def usados(self, modelo: str) -> int:
+        self._cambio_de_dia()
+        return self.uso.get(modelo, 0)
+
+    def marcar_agotado(self, modelo: str, demora_s: float | None) -> None:
+        # Sin dato de Google, se supone que vuelve en 12 horas.
+        self.agotados[modelo] = time.time() + (demora_s if demora_s else 12 * 3600)
+        self._guardar()
+
+    def agotado(self, modelo: str) -> bool:
+        hasta = self.agotados.get(modelo)
+        if hasta is None:
+            return False
+        if time.time() >= hasta:
+            del self.agotados[modelo]
+            self._guardar()
+            return False
+        return True
+
+    def proxima_renovacion(self, modelos: list[str]) -> float | None:
+        """En cuántos segundos vuelve a haber cupo en alguno de estos modelos."""
+        ahora = time.time()
+        esperas = [self.agotados[m] - ahora for m in modelos if m in self.agotados]
+        esperas = [e for e in esperas if e > 0]
+        return min(esperas) if esperas else None
+
+
+def _demora_pedida(exc: Exception) -> float | None:
+    """Cuánto pide esperar Google en un 429, en segundos, si lo dice."""
+    texto = str(exc)
+    m = re.search(r"retryDelay['\"]?\s*:\s*['\"]?([\d.]+)s", texto)
+    if m:
+        return float(m.group(1))
+    m = re.search(
+        r"retry in\s+(?:(\d+)h)?\s*(?:(\d+)m(?!s))?\s*(?:([\d.]+)s)?", texto, re.I
+    )
+    if m and any(m.groups()):
+        return (
+            int(m.group(1) or 0) * 3600
+            + int(m.group(2) or 0) * 60
+            + float(m.group(3) or 0)
+        )
+    return None
+
+
+def _es_cupo_diario(exc: Exception, demora: float | None) -> bool:
+    """¿El 429 es por el tope del día (y no por ir muy rápido)?"""
+    texto = str(exc).lower()
+    if "per day" in texto or "perday" in texto or "requests per day" in texto:
+        return True
+    if "per minute" in texto or "perminute" in texto:
+        return False
+    # Sin texto claro: si pide esperar más de diez minutos, no es el ritmo.
+    return bool(demora and demora > 600)
+
+
+def _duracion(segundos: float | None) -> str:
+    if not segundos or segundos <= 0:
+        return "un rato"
+    if segundos < 90:
+        return f"{segundos:.0f} segundos"
+    if segundos < 5400:
+        return f"{segundos / 60:.0f} minutos"
+    return f"unas {segundos / 3600:.0f} horas"
+
+
 class ClienteGemini:
-    """Habla con la API de Gemini."""
+    """Habla con la API de Gemini.
+
+    Los modelos se organizan en **niveles**. El plan gratis da muy pocos
+    pedidos por día a los modelos buenos (20 cada uno) y muchos a los
+    livianos (500 cada uno), así que cada pedido dice qué nivel necesita y el
+    cliente va usando los modelos de ese nivel en orden, pasando al siguiente
+    cuando a uno se le acaba el cupo del día.
+    """
 
     def __init__(
         self,
@@ -270,7 +424,11 @@ class ClienteGemini:
         dir_cache: Path | str = "data/cache",
         usar_cache: bool = True,
         temperatura: float = 0.1,
-        timeout_s: float = 240.0,
+        timeout_s: float = 600.0,
+        niveles: dict[str, list[str]] | None = None,
+        rpm_por_nivel: dict[str, float] | None = None,
+        respaldo: dict[str, str] | None = None,
+        archivo_cupos: Path | str | None = None,
     ):
         from google import genai  # import tardío: no hace falta en modo simulado
 
@@ -286,18 +444,67 @@ class ClienteGemini:
         )
         self.modelo = modelo
         self.alternativas = list(alternativas or [])
+        #: nivel -> modelos en orden de preferencia. Si no se pasan niveles,
+        #: todos los pedidos usan ``modelo`` y sus ``alternativas``.
+        self.niveles: dict[str, list[str]] | None = (
+            {k: list(v) for k, v in niveles.items()} if niveles else None
+        )
+        #: nivel -> a qué otro nivel recurrir si se agota (o nada: frenar).
+        self.respaldo: dict[str, str] = dict(respaldo or {})
         self.temperatura = temperatura
-        self.ritmo = _Ritmo(rpm)
+        self._rpm = float(rpm)
+        self._rpm_por_nivel = {k: float(v) for k, v in (rpm_por_nivel or {}).items()}
+        self._ritmos: dict[str, _Ritmo] = {}
+        self.ritmo = _Ritmo(rpm)  # el del modelo que se usó último
         self.esperas = list(esperas_429 or [5, 15, 45, 120])
         self.max_reintentos = max_reintentos
         self.cache = Cache(Path(dir_cache), usar_cache)
         self.contadores = Contadores()
         self._modelo_en_uso = modelo
+        self._en_uso_por_nivel: dict[str, str] = {}
         #: Función opcional que recibe los avisos (reintentos, cambios de
         #: modelo) para mostrarlos en pantalla.
         self.al_avisar: Callable[[str], None] | None = None
         #: Los errores que fue devolviendo Google, para el diagnóstico.
         self.errores_vistos: list[str] = []
+        #: Registro de cupos: cuántos pedidos se le hicieron hoy a cada
+        #: modelo y cuáles están agotados hasta cuándo. Va a disco para que
+        #: valga entre una corrida y la siguiente.
+        self.cupos = Cupos(Path(archivo_cupos) if archivo_cupos else None)
+
+    # -- niveles y modelos --------------------------------------------------
+
+    def modelos_de(self, nivel: str) -> list[str]:
+        """Los modelos de un nivel, en orden de preferencia."""
+        if self.niveles and nivel in self.niveles:
+            return list(self.niveles[nivel])
+        return [self.modelo] + [m for m in self.alternativas if m != self.modelo]
+
+    def _candidatos(self, nivel: str) -> list[str]:
+        """Modelos del nivel que hoy todavía tienen cupo, el vigente primero."""
+        disponibles = [m for m in self.modelos_de(nivel) if not self.cupos.agotado(m)]
+        vigente = self._en_uso_por_nivel.get(nivel) or (
+            self._modelo_en_uso if not self.niveles else None
+        )
+        if vigente in disponibles:
+            disponibles.remove(vigente)
+            disponibles.insert(0, vigente)
+        return disponibles
+
+    def _ritmo_de(self, modelo: str, nivel: str) -> "_Ritmo":
+        if modelo not in self._ritmos:
+            # El ritmo es del modelo, no del pedido: se busca a qué nivel
+            # pertenece de verdad, por si el pedido vino con un nivel ad hoc.
+            propio = next(
+                (
+                    n
+                    for n in ("fuerte", "liviano")
+                    if self.niveles and modelo in self.niveles.get(n, [])
+                ),
+                nivel,
+            )
+            self._ritmos[modelo] = _Ritmo(self._rpm_por_nivel.get(propio, self._rpm))
+        return self._ritmos[modelo]
 
     # -- armado del pedido ------------------------------------------------
 
@@ -346,7 +553,9 @@ class ClienteGemini:
     # -- envío ------------------------------------------------------------
 
     def pedir(self, p: Pedido) -> Respuesta:
-        clave = p.clave_cache(self.modelo)
+        # La caché va por nivel y no por modelo: si hoy contestó un modelo y
+        # mañana le toca a otro del mismo grupo, lo ya hecho sirve igual.
+        clave = p.clave_cache(f"nivel:{p.nivel}" if self.niveles else self.modelo)
         guardada = self.cache.leer(clave)
         if guardada is not None:
             self.contadores.pedidos += 1
@@ -354,18 +563,28 @@ class ClienteGemini:
             guardada.etiqueta = p.etiqueta
             return guardada
 
-        modelos = [self._modelo_en_uso] + [
-            m for m in self.alternativas if m != self._modelo_en_uso
-        ]
+        nivel = p.nivel
+        probados: set[str] = set()
         ultimo_error: Exception | None = None
         ultimo_tipo = ""
+        modelos = self._candidatos(nivel)
+        if not modelos:
+            nivel, modelos = self._nivel_de_respaldo(nivel, None)
 
-        for n_modelo, modelo in enumerate(modelos):
-            quedan_otros = n_modelo < len(modelos) - 1
+        while modelos:
+            modelo = modelos.pop(0)
+            if modelo in probados:
+                continue
+            probados.add(modelo)
+            quedan_otros = bool(modelos)
+            ritmo = self._ritmo_de(modelo, nivel)
+            self.ritmo = ritmo
             saturado = 0
+
             for intento in range(self.max_reintentos + 1):
-                self.ritmo.esperar()
+                ritmo.esperar()
                 try:
+                    self.cupos.anotar(modelo)
                     bruta = self.cliente.models.generate_content(
                         model=modelo,
                         contents=self._partes(p),
@@ -374,18 +593,32 @@ class ClienteGemini:
                 except Exception as exc:  # noqa: BLE001 - el SDK tira varios tipos
                     ultimo_error = exc
                     self.errores_vistos.append(
-                        f"{modelo}: {type(exc).__name__}: {str(exc)[:300]}"
+                        f"{modelo}: {type(exc).__name__}: {str(exc)[:600]}"
                     )
                     espera = self.esperas[min(intento, len(self.esperas) - 1)]
 
                     if _es_429(exc):
-                        ultimo_tipo = "cuota"
                         self.contadores.errores_429 += 1
-                        self.ritmo.bajar()
-                        if intento < self.max_reintentos:
+                        demora = _demora_pedida(exc)
+                        if _es_cupo_diario(exc, demora):
+                            # Se acabó lo de hoy para este modelo: reintentar
+                            # no sirve de nada. Se anota y se pasa al próximo.
+                            ultimo_tipo = "diario"
+                            self.cupos.marcar_agotado(modelo, demora)
                             self._avisar(
-                                f"Google dice que se pasó el límite gratis ({modelo}). "
-                                f"Espero {espera:.0f} s y pruebo de nuevo "
+                                f"Se acabó el cupo gratis de hoy de {modelo}"
+                                + (f" (se renueva en {_duracion(demora)})." if demora else ".")
+                            )
+                            break
+                        ultimo_tipo = "cuota"
+                        ritmo.bajar()
+                        if intento < self.max_reintentos:
+                            # Google suele decir cuánto esperar: se le hace caso.
+                            if demora:
+                                espera = min(demora + 1.0, 90.0)
+                            self._avisar(
+                                f"{modelo}: demasiados pedidos por minuto. "
+                                f"Espero {espera:.0f} s y sigo "
                                 f"({intento + 1}/{self.max_reintentos})."
                             )
                             self.contadores.reintentos += 1
@@ -395,6 +628,7 @@ class ClienteGemini:
 
                     if _es_modelo_invalido(exc):
                         ultimo_tipo = "modelo"
+                        self.cupos.marcar_agotado(modelo, 6 * 3600)
                         self._avisar(f"El modelo {modelo} no está disponible.")
                         break
 
@@ -422,18 +656,17 @@ class ClienteGemini:
                             self.contadores.reintentos += 1
                             time.sleep(espera)
                             continue
-                        if quedan_otros:
-                            self._avisar(
-                                f"{modelo} sigue saturado: pruebo con {modelos[n_modelo + 1]}."
-                            )
                         break
 
                     raise ErrorGemini(f"Error de la API: {exc}") from exc
 
-                if modelo != self._modelo_en_uso:
+                if self._en_uso_por_nivel.get(nivel, modelo) != modelo or (
+                    not self.niveles and modelo != self._modelo_en_uso
+                ):
                     self._avisar(f"Sigo con el modelo {modelo}.")
                 self._modelo_en_uso = modelo
-                self.ritmo.recuperar()
+                self._en_uso_por_nivel[nivel] = modelo
+                ritmo.recuperar()
                 r = self._a_respuesta(bruta, p, modelo)
                 self.cache.guardar(clave, r)
                 self.contadores.pedidos += 1
@@ -445,6 +678,12 @@ class ClienteGemini:
                     self.contadores.segundos_video += max(0.0, p.fin_s - p.inicio_s)
                 return r
 
+            if not modelos and ultimo_tipo == "diario":
+                # Se agotó todo el nivel: ¿hay un nivel de respaldo permitido?
+                nivel, modelos = self._nivel_de_respaldo(nivel, probados)
+
+        if ultimo_tipo == "diario" or (ultimo_error is None):
+            raise self._error_cupo_diario(p.nivel)
         if ultimo_tipo == "saturado":
             raise ErrorGemini(
                 "Google contestó que sus modelos están saturados y no pudo "
@@ -455,6 +694,34 @@ class ClienteGemini:
         raise CuotaAgotada(
             "No pude completar el pedido con ningún modelo. "
             f"Último error: {ultimo_error}. Revisá la cuota en Google AI Studio."
+        )
+
+    def _nivel_de_respaldo(
+        self, nivel: str, probados: set[str] | None
+    ) -> tuple[str, list[str]]:
+        """Si el nivel se agotó y hay permiso, sigue con el nivel de respaldo."""
+        otro = self.respaldo.get(nivel)
+        if not otro or otro == nivel:
+            return nivel, []
+        modelos = [m for m in self._candidatos(otro) if m not in (probados or set())]
+        if modelos:
+            self._avisar(
+                f"Se acabó el cupo de hoy de los modelos de nivel '{nivel}'. "
+                f"Sigo con los de nivel '{otro}', que son menos precisos."
+            )
+        return otro, modelos
+
+    def _error_cupo_diario(self, nivel: str) -> "CupoDiarioAgotado":
+        modelos = self.modelos_de(nivel)
+        falta = self.cupos.proxima_renovacion(modelos)
+        cuando = f" Se renueva en {_duracion(falta)}." if falta else ""
+        return CupoDiarioAgotado(
+            f"Se acabó el cupo gratis de hoy de los modelos de nivel '{nivel}' "
+            f"({', '.join(modelos)}).{cuando} No hace falta reintentar ahora: "
+            "todo lo analizado quedó guardado, y al volver a correr sigue "
+            "desde donde quedó.",
+            nivel=nivel,
+            renueva_en_s=falta,
         )
 
     def _avisar(self, texto: str) -> None:
@@ -519,6 +786,8 @@ class ClienteGemini:
                 prompt="Respondé únicamente con este JSON: {\"ok\": true}",
                 esquema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
                 etiqueta="verificación",
+                # Con un modelo liviano: no vale gastar del cupo chico en esto.
+                nivel="liviano",
             )
         )
         return {
@@ -746,4 +1015,8 @@ def crear_cliente(cfg: Any, forzar_simulado: bool = False) -> Any:
         dir_cache=cfg.dir_cache,
         usar_cache=cfg.usar_cache,
         temperatura=cfg.temperatura,
+        niveles=cfg.niveles,
+        rpm_por_nivel=cfg.rpm_por_nivel,
+        respaldo=cfg.respaldo_de_niveles,
+        archivo_cupos=cfg.archivo_cupos,
     )

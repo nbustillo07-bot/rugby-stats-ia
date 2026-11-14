@@ -14,6 +14,7 @@ import streamlit as st
 from rugby_stats import revision, ui
 from rugby_stats.analisis import pasadas
 from rugby_stats.gemini import video as video_mod
+from rugby_stats.gemini.cliente import CupoDiarioAgotado
 from rugby_stats.modelos import RASGOS
 
 st.set_page_config(page_title="Fichas · rugby-stats-ia", page_icon="🏉", layout="wide")
@@ -78,6 +79,9 @@ if col1.button("Buscar fichas", type="primary"):
         barra.progress(1.0, text="Listo")
         st.success(f"{len(nuevas)} lecturas nuevas.")
         st.rerun()
+    except CupoDiarioAgotado as exc:
+        barra.empty()
+        st.warning(str(exc))
     except Exception as exc:  # noqa: BLE001 - se muestra el error, no se cae la app
         barra.empty()
         st.error(f"No pude completar la pasada: {exc}")

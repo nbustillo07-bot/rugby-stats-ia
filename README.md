@@ -468,15 +468,17 @@ Todo está en `config.yaml`, comentado línea por línea. Lo que más conviene t
 
 | Parámetro | Qué hace |
 |---|---|
-| `modelo.nombre` | Qué modelo usar. Por defecto `gemini-3.8-flash` |
-| `modelo.alternativas` | Si el principal da error de cuota o no existe, se prueban estos en orden |
+| `modelos.fuerte` / `modelos.liviano` | Los modelos de cada nivel, en orden de uso |
+| `pasos.*` | Qué nivel usa cada paso del análisis |
+| `modelos.si_se_agota_el_fuerte` | `frenar` (por defecto) o `seguir_con_liviano` |
+| `modelos.cupo_diario` | Los topes diarios de tu cuenta, para mostrar cuánto queda |
 | `velocidades.*.fps` | Los cuadros por segundo de cada pasada. Subir el de `contacto` es lo primero que conviene probar si falla la identificación |
 | `reglas.tackle_positivo` | `portador_detenido` (por defecto) o `portador_avanza` |
 | `reglas.tolerancia_avance_cm` | Cuánto avance se tolera antes de considerar que avanzó |
 | `reglas.umbral_confianza_revision` | Debajo de esto, el evento va obligatoriamente a la cola |
 | `reglas.reintentos_sin_clasificar` | Cuántas veces se vuelve a mirar un evento incompleto antes de mandarlo a la cola |
 | `puntos.*` | Puntos por try, conversión, penal y drop |
-| `api.rpm_inicial` | Con cuántos pedidos por minuto arranca la cola |
+| `modelos.pedidos_por_minuto` | A qué ritmo se le pide a cada nivel |
 | `video.descargar_si_dura_mas_de_s` | A partir de qué largo conviene bajar el video en lugar de pasar la URL |
 | `salida.jugadores_de` | `propio` o `ambos` |
 
@@ -484,39 +486,61 @@ Todo está en `config.yaml`, comentado línea por línea. Lo que más conviene t
 
 ## Límites y costos de la API
 
-Verificado al 13/11/2026 contra la documentación de Google. **Conviene
-re-chequearlo**: esto cambia seguido.
+**Lo que manda en el plan gratis son los pedidos por día**, no los tokens.
+Medido en una cuenta real el 14/11/2026 (los tuyos se ven en
+[ai.dev/rate-limit](https://ai.dev/rate-limit), columna RPD):
 
-- `gemini-3.8-flash` tiene free tier y es el modelo de los ejemplos oficiales de
-  video. También tienen free tier `gemini-3.6-flash`, `gemini-3.5-flash-lite` y
-  `gemini-3.1-flash-lite`.
-- Gemini acepta **URLs de YouTube** directamente, pero solo videos **públicos**:
-  ni privados ni ocultos.
-- Free tier: hasta **8 horas de video de YouTube por día**.
+| Modelo | Por minuto | Por día |
+|---|---|---|
+| `gemini-3.8-flash` | 5 | **20** |
+| `gemini-3.6-flash` | 5 | **20** |
+| `gemini-4-hydrogen` | 5 | **20** |
+| `gemini-3.5-flash-lite` | 15 | **500** |
+| `gemini-3.1-flash-lite` | 15 | **500** |
+
+Con 20 pedidos por día no se puede analizar nada usando un solo modelo, así
+que el trabajo **se reparte en dos niveles** (se configura en `config.yaml`):
+
+- **Livianos** (1.000 pedidos por día entre los dos): lo que es volumen.
+  Separar juego de tiempo muerto, el relato, los cambios y la primera
+  detección de eventos.
+- **Fuertes** (60 por día entre los tres): lo difícil y escaso. Leer los
+  números para las fichas y resolver cada contacto (quién tackleó).
+
+Qué entra en un día gratis: un tramo de 5 a 10 minutos, holgado. Un partido
+entero necesita más pedidos fuertes que los 60 del día, así que **lleva dos o
+tres días**: cuando se acaba el cupo el análisis frena solo con un aviso, y al
+otro día se aprieta **Correr análisis** y sigue desde donde quedó. La pantalla
+de Análisis muestra la estimación antes de arrancar, y la barra lateral cuánto
+cupo va quedando.
+
+Si preferís terminar el mismo día a costa de precisión, en `config.yaml`:
+`si_se_agota_el_fuerte: seguir_con_liviano`.
+
+El programa distingue los dos rechazos de Google: "vas muy rápido" (espera lo
+que Google pide y sigue) y "se acabó el cupo de hoy" (no insiste: pasa al
+siguiente modelo del nivel, y si no queda ninguno, frena).
+
+Otros datos, verificados contra la documentación y contra la API real:
+
+- Gemini acepta **URLs de YouTube** directamente, pero solo videos **públicos**.
 - Se puede recortar (`start_offset`, `end_offset`) y fijar los cuadros por
-  segundo (`fps`, de 0 a 24) por pedido. Eso es lo que permite el método de tres
-  velocidades.
-- Consumo aproximado: **100 tokens por segundo** de video en resolución baja,
-  **300** en alta.
-- Los límites por minuto y por día dependen del modelo y de la cuenta, y se ven
-  en AI Studio. **No están hardcodeados acá**: la cola arranca con un ritmo
-  razonable y lo baja sola ante un 429.
+  segundo (`fps`, de 0 a 24) por pedido.
+- **El link de YouTube se pasa directo, sin bajar el video.** Había reportes
+  de que con recorte viajaba el audio del video entero en cada pedido; en la
+  prueba real no pasó (12 segundos de video costaron 829 tokens). Si el
+  diagnóstico alguna vez muestra miles de tokens por segundo de video, se
+  activa la descarga con `video.descargar_si_dura_mas_de_s`.
+- Los archivos subidos a Google (videos locales) se borran solos a las 48
+  horas; el programa los vuelve a subir cuando hace falta.
 
-### El problema del audio en URLs de YouTube
+### Si querés salir del plan gratis
 
-Esto no es obvio y cuesta plata: **al pasar una URL de YouTube con recorte, la
-API recorta los cuadros pero manda el audio del video entero en cada pedido.**
-En un partido de 80 minutos, con decenas de ventanas, eso multiplica los tokens.
-
-El sistema lo maneja solo: si el video dura más de lo que fija
-`video.descargar_si_dura_mas_de_s` (20 minutos por defecto) y hay `yt-dlp`
-instalado, lo baja una vez y lo sube por la Files API, donde el recorte ahorra
-de verdad.
-
-`scripts/verificar_api.py --video ...` reporta los tokens por segundo de video
-reales: si te da mucho más de 100 en resolución baja, estás pagando el audio.
-
----
+Con facturación activada los topes diarios dejan de ser el problema y un
+partido entero se analiza de una. El costo depende de los precios de Google
+del momento y del largo del video: mirá la
+[página de precios](https://ai.google.dev/pricing) antes de decidir. En el
+plan pago, además, Google no usa lo que le mandás para entrenar.
 
 ## Privacidad
 
@@ -581,9 +605,9 @@ o que el plantel esté incompleto. El descarte (son 15 en cancha) es gran parte
 de lo que hace funcionar la identificación. Si las fichas están y sigue
 fallando, subí `velocidades.contacto.fps` en `config.yaml`.
 
-**Errores 429 todo el tiempo.** Es la cuota. La cola baja el ritmo sola, pero si
-pasa seguido, bajá `api.rpm_inicial` o analizá tramos más cortos. El límite
-diario se ve en AI Studio.
+**"Se acabó el cupo gratis de hoy".** No es un error: el plan gratis da pocos
+pedidos por día a los modelos buenos. Lo hecho quedó guardado; al otro día
+volvé a correr y sigue. Ver [límites](#límites-y-costos-de-la-api).
 
 **El modelo inventa eventos.** Se ve en la pantalla de Precisión como
 "descartados". Subí `reglas.umbral_confianza_revision` para que entren menos
@@ -643,7 +667,7 @@ rugby-stats-ia/
 │   ├── diagnostico.py        una pasada de prueba contra la API real
 │   └── analizar.py           la CLI
 ├── data/ejemplos/            un CSV de plantel de ejemplo
-└── tests/                    357 tests, todos sin clave de API
+└── tests/                    388 tests, todos sin clave de API
 ```
 
 ---
