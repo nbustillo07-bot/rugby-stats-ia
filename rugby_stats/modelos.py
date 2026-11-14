@@ -75,7 +75,7 @@ RASGOS = (
     "pelo",
     "contextura",
     "medias",
-    "muñequeras",
+    "munequeras",
     "protector_bucal",
     "otro",
 )
@@ -202,6 +202,9 @@ class FuenteVideo:
     # Si se bajó o se subió, acá queda la ruta local y el nombre en la Files API.
     ruta_local: str | None = None
     uri_subida: str | None = None
+    # Cuándo se subió a la Files API (ISO, UTC). Los archivos subidos se
+    # borran solos a las 48 horas, así que hay que saber cuándo renovarlos.
+    subido_en: str | None = None
     # Desfase entre el reloj del marcador en pantalla y el tiempo del video.
     # reloj_partido = t_video + desfase_s
     desfase_s: float = 0.0

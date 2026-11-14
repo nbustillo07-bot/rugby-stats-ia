@@ -7,6 +7,8 @@ clasificar no se cuelen a las stats.
 
 from __future__ import annotations
 
+import pytest
+
 from rugby_stats.analisis import pasadas, pipeline
 from rugby_stats.gemini.cliente import ClienteSimulado
 from rugby_stats.modelos import Evento, Ficha
@@ -269,8 +271,172 @@ class TestContactoDudoso:
         assert pasadas._es_contacto_dudoso(e, cfg)
 
     def test_un_tackle_claro_no_es_dudoso(self, cfg):
-        e = Evento(t_segundos=1, accion="Tackle", jugador_numero=7, confianza=0.95)
+        e = Evento(
+            t_segundos=1, accion="Tackle", resultado="positivo",
+            jugador_numero=7, confianza=0.95,
+        )
         assert not pasadas._es_contacto_dudoso(e, cfg)
+
+    def test_un_tackle_sin_resultado_es_dudoso(self, cfg):
+        """Sin saber si el portador avanzó, el tackle no está clasificado."""
+        e = Evento(t_segundos=1, accion="Tackle", jugador_numero=7, confianza=0.95)
+        assert pasadas._es_contacto_dudoso(e, cfg)
+
+    @pytest.mark.parametrize(
+        "accion", ["Ruck limpiado", "Pelota perdida", "Pelota recuperada", "Pase"]
+    )
+    def test_lo_que_no_es_tackle_ni_carry_no_se_re_examina(self, cfg, accion):
+        """El re-examen devuelve portador y tackleadores: aplicado a un ruck
+        inventaría un carry y un tackle que no existieron."""
+        e = Evento(t_segundos=1, accion=accion, jugador_numero=None, confianza=0.2)
+        assert not pasadas._es_contacto_dudoso(e, cfg)
+
+
+class TestAgruparContactos:
+    def test_carry_y_tackle_del_mismo_choque_son_un_solo_contacto(self):
+        grupos = pasadas.agrupar_contactos([
+            {"t_segundos": 100.0, "pista": "Carry de 10"},
+            {"t_segundos": 100.5, "pista": "Tackle"},
+        ])
+        assert len(grupos) == 1
+        assert grupos[0]["desde_s"] == 100.0 and grupos[0]["hasta_s"] == 100.5
+        assert "Carry de 10" in grupos[0]["pista"] and "Tackle" in grupos[0]["pista"]
+
+    def test_contactos_separados_no_se_juntan(self):
+        grupos = pasadas.agrupar_contactos([
+            {"t_segundos": 100.0}, {"t_segundos": 110.0}, {"t_segundos": 111.0},
+        ])
+        assert len(grupos) == 2
+
+    def test_no_importa_el_orden_de_entrada(self):
+        grupos = pasadas.agrupar_contactos([
+            {"t_segundos": 111.0}, {"t_segundos": 100.0}, {"t_segundos": 110.0},
+        ])
+        assert [round(g["t_segundos"], 1) for g in grupos] == [100.0, 110.5]
+
+    def test_lista_vacia(self):
+        assert pasadas.agrupar_contactos([]) == []
+
+
+class TestCombinarContactos:
+    """Qué pasa con lo que había cuando llega el re-examen."""
+
+    def _contacto(self, t, eventos):
+        return [{"t_segundos": t, "desde_s": t, "hasta_s": t, "eventos": eventos}]
+
+    def test_el_re_examen_identificado_reemplaza_al_dudoso(self, db, partido_cargado):
+        pid = partido_cargado.id
+        db.guardar_evento(pid, Evento(
+            t_segundos=100, accion="Tackle", equipo="Club A",
+            jugador_numero=None, confianza=0.3, pendiente=True,
+        ))
+        pipeline._combinar_contactos(db, pid, self._contacto(100.4, [
+            Evento(t_segundos=100.4, accion="Tackle", resultado="positivo",
+                   equipo="Club A", jugador_numero=6, confianza=0.9),
+        ]))
+        tackles = [e for e in db.eventos(pid) if e.accion == "Tackle"]
+        assert len(tackles) == 1
+        assert tackles[0].jugador_numero == 6
+
+    def test_no_se_duplica_cuando_el_choque_venia_como_carry_y_tackle(
+        self, db, partido_cargado
+    ):
+        pid = partido_cargado.id
+        db.guardar_evento(pid, Evento(
+            t_segundos=100.0, accion="Carry", equipo="Club B",
+            jugador_numero=10, confianza=0.5,
+        ))
+        db.guardar_evento(pid, Evento(
+            t_segundos=100.6, accion="Tackle", equipo="Club A",
+            jugador_numero=None, confianza=0.4,
+        ))
+        contacto = [{
+            "t_segundos": 100.3, "desde_s": 100.0, "hasta_s": 100.6,
+            "eventos": [
+                Evento(t_segundos=100.3, accion="Carry", resultado="detenido",
+                       equipo="Club B", jugador_numero=10, confianza=0.9),
+                Evento(t_segundos=100.3, accion="Tackle", resultado="positivo",
+                       equipo="Club A", jugador_numero=6, confianza=0.9),
+                Evento(t_segundos=100.3, accion="Tackle", resultado="positivo",
+                       equipo="Club A", jugador_numero=7, confianza=0.9),
+            ],
+        }]
+        pipeline._combinar_contactos(db, pid, contacto)
+        eventos = db.eventos(pid)
+        assert len([e for e in eventos if e.accion == "Carry"]) == 1
+        assert sorted(e.jugador_numero for e in eventos if e.accion == "Tackle") == [6, 7]
+
+    def test_si_el_re_examen_no_identifica_se_conserva_la_pista_vieja(
+        self, db, partido_cargado
+    ):
+        """Cambiar una pista floja por un 'sin identificar' sería retroceder."""
+        pid = partido_cargado.id
+        db.guardar_evento(pid, Evento(
+            t_segundos=100, accion="Tackle", equipo="Club A",
+            jugador_numero=6, resultado="", confianza=0.5,
+        ))
+        pipeline._combinar_contactos(db, pid, self._contacto(100, [
+            Evento(t_segundos=100, accion="Tackle", resultado="positivo",
+                   equipo="Club A", jugador_numero=None, confianza=0.3,
+                   pendiente=True),
+        ]))
+        tackles = [e for e in db.eventos(pid) if e.accion == "Tackle"]
+        assert len(tackles) == 1
+        assert tackles[0].jugador_numero == 6          # se conservó
+        assert tackles[0].resultado == "positivo"      # y se completó
+        assert tackles[0].confianza == 0.5             # sigue yendo a la cola
+        assert "no pudo confirmar" in tackles[0].nota
+
+    def test_lo_que_reviso_una_persona_no_se_toca(self, db, partido_cargado):
+        pid = partido_cargado.id
+        db.guardar_evento(pid, Evento(
+            t_segundos=100, accion="Tackle", resultado="negativo",
+            equipo="Club A", jugador_numero=3, confianza=1.0, revisado=True,
+        ))
+        pipeline._combinar_contactos(db, pid, self._contacto(100, [
+            Evento(t_segundos=100, accion="Tackle", resultado="positivo",
+                   equipo="Club A", jugador_numero=6, confianza=0.9),
+        ]))
+        revisados = [e for e in db.eventos(pid) if e.revisado]
+        assert len(revisados) == 1
+        assert revisados[0].jugador_numero == 3
+        assert revisados[0].resultado == "negativo"
+
+    def test_un_ruck_cercano_no_se_borra(self, db, partido_cargado):
+        pid = partido_cargado.id
+        db.guardar_evento(pid, Evento(
+            t_segundos=100.5, accion="Ruck limpiado", resultado="limpio",
+            equipo="Club A", jugador_numero=8, confianza=0.6,
+        ))
+        pipeline._combinar_contactos(db, pid, self._contacto(100, [
+            Evento(t_segundos=100, accion="Tackle", resultado="positivo",
+                   equipo="Club A", jugador_numero=6, confianza=0.9),
+        ]))
+        assert len([e for e in db.eventos(pid) if e.accion == "Ruck limpiado"]) == 1
+
+    def test_el_knock_on_del_re_examen_se_agrega_una_sola_vez(
+        self, db, partido_cargado
+    ):
+        pid = partido_cargado.id
+        perdida = Evento(t_segundos=100, accion="Pelota perdida",
+                         resultado="knock-on", equipo="Club B",
+                         jugador_numero=12, confianza=0.9)
+        pipeline._combinar_contactos(db, pid, self._contacto(100, [perdida]))
+        otra = Evento(t_segundos=100.2, accion="Pelota perdida",
+                      resultado="knock-on", equipo="Club B",
+                      jugador_numero=12, confianza=0.9)
+        pipeline._combinar_contactos(db, pid, self._contacto(100.2, [otra]))
+        assert len([e for e in db.eventos(pid) if e.accion == "Pelota perdida"]) == 1
+
+    def test_correr_dos_veces_el_re_examen_no_duplica(self, db, partido_cargado, cfg):
+        """Rehacer el paso con 'forzar' tiene que dejar lo mismo, no el doble."""
+        pid = partido_cargado.id
+        pipeline.correr(db, ClienteSimulado(), pid, cfg)
+        primera = len(db.eventos(pid))
+        pipeline.correr(
+            db, ClienteSimulado(), pid, cfg, pasos=["contactos"], forzar=True
+        )
+        assert len(db.eventos(pid)) <= primera
 
     def test_un_try_no_pasa_por_el_re_examen_de_contactos(self, cfg):
         """El re-examen a 10 fps es caro: solo para contactos."""

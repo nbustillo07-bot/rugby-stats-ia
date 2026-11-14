@@ -105,3 +105,17 @@ def partido_cargado(db: BaseDatos, partido: Partido) -> Partido:
     db.guardar_plantel(pid, hacer_plantel("Club A"))
     db.guardar_plantel(pid, hacer_plantel("Club B"))
     return db.partido(pid)
+
+
+@pytest.fixture(autouse=True)
+def _sin_clave_real(monkeypatch):
+    """Ningún test usa la clave de verdad, aunque haya un .env en la carpeta.
+
+    ``cargar_config`` lee el .env y deja la clave en el entorno del proceso:
+    sin esto, un test podría terminar llamando a la API real.
+    """
+    import os
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    yield
+    os.environ.pop("GEMINI_API_KEY", None)

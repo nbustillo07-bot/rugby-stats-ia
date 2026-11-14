@@ -63,7 +63,7 @@ tabla, no un relato.
 
 ### En Windows, con doble clic
 
-En la carpeta hay cinco archivos numerados. Se usan en orden, con doble clic:
+En la carpeta hay seis archivos numerados. Se usan en orden, con doble clic:
 
 | Archivo | Qué hace |
 |---|---|
@@ -72,6 +72,7 @@ En la carpeta hay cinco archivos numerados. Se usan en orden, con doble clic:
 | `3_verificar.bat` | Chequea que la clave ande (y, si se le pasa un link, que pueda mirar video) |
 | `4_abrir.bat` | Abre la aplicación en el navegador |
 | `5_subir_a_github.bat` | Sube el repo a GitHub (hay que crear antes el repo vacío en github.com/new) |
+| `6_prueba_real.bat` | Diagnóstico: le hace una docena de pedidos reales a Gemini sobre un tramo corto y anota todo en `salidas\diagnostico` |
 
 Si Windows muestra el cartel azul "Windows protegió su PC": **Más información →
 Ejecutar de todas formas**.
@@ -302,6 +303,14 @@ El Excel. Ver [qué sale](#qué-sale-en-el-excel).
 ---
 
 ## El primer hito
+
+**Antes que nada, corré el diagnóstico** (`6_prueba_real.bat`, o
+`python scripts/diagnostico.py`). Hace una vez cada tipo de pedido del sistema
+sobre un par de minutos de video y deja anotado en `salidas/diagnostico/` qué
+anduvo, qué no, la respuesta cruda de cada uno y cuántos tokens gastó. Si algo
+falla ahí, es mucho más fácil de arreglar que a mitad de un partido. La clave
+de la API nunca se escribe en esos archivos, así que se pueden compartir.
+
 
 Esto todavía no se probó con Gemini. El dato que falta es **cuánto acierta en un
 tramo real**, y se consigue así:
@@ -631,9 +640,10 @@ rugby-stats-ia/
 │       └── pipeline.py       el orquestador reanudable
 ├── scripts/
 │   ├── verificar_api.py      chequear la clave y el modelo antes de gastar
+│   ├── diagnostico.py        una pasada de prueba contra la API real
 │   └── analizar.py           la CLI
 ├── data/ejemplos/            un CSV de plantel de ejemplo
-└── tests/                    228 tests, todos sin clave de API
+└── tests/                    357 tests, todos sin clave de API
 ```
 
 ---

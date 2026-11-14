@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
 from .config import Config, cargar_config
-from .db import BaseDatos
+from .db import BaseDatos, ruta_por_defecto
 from .gemini.cliente import crear_cliente
 from .modelos import Partido
 
@@ -34,8 +33,7 @@ def config() -> Config:
 def db() -> BaseDatos:
     """Una conexión por sesión de Streamlit."""
     if "db" not in st.session_state:
-        ruta = os.environ.get("RUGBY_STATS_DB") or (RAIZ / "data" / "partidos.db")
-        st.session_state.db = BaseDatos(ruta)
+        st.session_state.db = BaseDatos(ruta_por_defecto())
     return st.session_state.db
 
 

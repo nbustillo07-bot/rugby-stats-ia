@@ -16,11 +16,14 @@ el recorte sí ahorra de verdad.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import re
 import shutil
 import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..modelos import FuenteVideo
@@ -40,8 +43,22 @@ def hay_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+def _cmd_ytdlp() -> list[str] | None:
+    """Cómo invocar yt-dlp.
+
+    Primero como módulo del mismo Python que está corriendo: cuando la
+    aplicación se abre con doble clic, el entorno no está "activado" y el
+    ejecutable yt-dlp no está en el PATH aunque esté instalado.
+    """
+    if importlib.util.find_spec("yt_dlp") is not None:
+        return [sys.executable, "-m", "yt_dlp"]
+    if shutil.which("yt-dlp"):
+        return ["yt-dlp"]
+    return None
+
+
 def hay_ytdlp() -> bool:
-    return shutil.which("yt-dlp") is not None
+    return _cmd_ytdlp() is not None
 
 
 def id_youtube(url: str) -> str | None:
@@ -84,11 +101,13 @@ def duracion_s(ruta_o_url: str) -> float | None:
             return float(salida)
         except (subprocess.SubprocessError, ValueError):
             return None
-    if not hay_ytdlp():
+    cmd = _cmd_ytdlp()
+    if cmd is None:
         return None
     try:
         salida = subprocess.run(
-            ["yt-dlp", "--no-warnings", "--dump-single-json", "--skip-download", ruta_o_url],
+            [*cmd, "--no-warnings", "--no-playlist", "--dump-single-json",
+             "--skip-download", ruta_o_url],
             capture_output=True, text=True, timeout=120, check=True,
         ).stdout
         return float(json.loads(salida).get("duration") or 0) or None
@@ -96,17 +115,32 @@ def duracion_s(ruta_o_url: str) -> float | None:
         return None
 
 
-def descargar(referencia: str, destino: Path, calidad: str = "720") -> Path:
-    """Baja un video con yt-dlp. 720p alcanza: no analizamos texturas."""
-    if not hay_ytdlp():
+def descargar(referencia: str, destino: Path, calidad: str = "480") -> Path:
+    """Baja un video con yt-dlp.
+
+    480p alcanza y sobra: el modelo reduce cada cuadro a una resolución fija,
+    y un archivo más chico sube más rápido y entra en el límite de 2 GB de la
+    Files API aunque el partido sea largo.
+    """
+    cmd_base = _cmd_ytdlp()
+    if cmd_base is None:
         raise ErrorVideo(
             "Falta yt-dlp para bajar el video. Instalalo con: pip install yt-dlp"
         )
     destino.mkdir(parents=True, exist_ok=True)
     plantilla = str(destino / "%(id)s.%(ext)s")
+    if hay_ffmpeg():
+        formato = (
+            f"bestvideo[height<={calidad}][ext=mp4]+bestaudio[ext=m4a]/"
+            f"best[height<={calidad}][ext=mp4]/best[height<={calidad}]/best"
+        )
+    else:
+        # Sin ffmpeg no se pueden unir video y audio por separado: se pide un
+        # formato que ya venga en un solo archivo.
+        formato = f"best[height<={calidad}][ext=mp4]/best[ext=mp4]/best"
     cmd = [
-        "yt-dlp", "--no-warnings", "--no-playlist",
-        "-f", f"bestvideo[height<={calidad}]+bestaudio/best[height<={calidad}]/best",
+        *cmd_base, "--no-warnings", "--no-playlist",
+        "-f", formato,
         "--merge-output-format", "mp4",
         "-o", plantilla, "--print", "after_move:filepath",
         referencia,
@@ -114,12 +148,18 @@ def descargar(referencia: str, destino: Path, calidad: str = "720") -> Path:
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, check=True)
     except subprocess.CalledProcessError as exc:
-        raise ErrorVideo(f"yt-dlp no pudo bajar el video: {exc.stderr[-400:]}") from exc
+        raise ErrorVideo(
+            f"yt-dlp no pudo bajar el video: {(exc.stderr or '')[-400:]}"
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         raise ErrorVideo("La descarga tardó más de una hora y la corté.") from exc
-    ruta = Path((res.stdout or "").strip().splitlines()[-1]) if res.stdout.strip() else None
+    lineas = [x for x in (res.stdout or "").strip().splitlines() if x.strip()]
+    ruta = Path(lineas[-1].strip()) if lineas else None
     if not ruta or not ruta.exists():
-        candidatos = sorted(destino.glob("*.mp4"), key=lambda f: f.stat().st_mtime)
+        candidatos = sorted(
+            [f for f in destino.iterdir() if f.suffix.lower() in (".mp4", ".mkv", ".webm")],
+            key=lambda f: f.stat().st_mtime,
+        )
         if not candidatos:
             raise ErrorVideo("yt-dlp terminó pero no encontré el archivo bajado.")
         ruta = candidatos[-1]
@@ -171,6 +211,32 @@ def embed_youtube(url: str, inicio_s: float, fin_s: float | None = None) -> str:
     return f"https://www.youtube.com/embed/{vid}?{'&'.join(partes)}"
 
 
+#: Los archivos subidos a la Files API se borran solos a las 48 horas.
+#: Se vuelven a subir un poco antes, para no quedar a mitad de un análisis.
+VIDA_SUBIDA = timedelta(hours=40)
+
+
+def _subida_vigente(fuente: FuenteVideo) -> bool:
+    """¿El archivo subido a la Files API sigue ahí?"""
+    if not fuente.uri_subida or fuente.uri_subida == fuente.referencia:
+        return False
+    if not fuente.subido_en:
+        return False
+    try:
+        cuando = datetime.fromisoformat(fuente.subido_en)
+    except ValueError:
+        return False
+    if cuando.tzinfo is None:
+        cuando = cuando.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - cuando < VIDA_SUBIDA
+
+
+def _subir(fuente: FuenteVideo, cliente) -> None:
+    log.info("Subiendo %s por la Files API", Path(fuente.ruta_local or "").name)
+    fuente.uri_subida = cliente.subir_archivo(fuente.ruta_local)
+    fuente.subido_en = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def preparar(
     fuente: FuenteVideo,
     cliente,
@@ -181,21 +247,40 @@ def preparar(
 
     Al terminar, ``fuente.uri_subida`` tiene lo que se le pasa al modelo:
     la URL de YouTube, o el URI de la Files API si hubo que subir el archivo.
+
+    Se puede llamar todas las veces que haga falta: no vuelve a bajar lo que
+    ya está en disco ni a subir lo que sigue vigente.
     """
     dir_trabajo = Path(dir_trabajo)
     dir_trabajo.mkdir(parents=True, exist_ok=True)
 
+    en_disco = bool(fuente.ruta_local) and Path(fuente.ruta_local).exists()
+    if fuente.ruta_local and not en_disco:
+        # El archivo ya no está (se borró la carpeta de trabajo, por ejemplo).
+        if fuente.tipo == "archivo":
+            raise ErrorVideo(f"No encuentro el archivo {fuente.ruta_local}.")
+        fuente.ruta_local = None
+
     if fuente.duracion_s is None:
-        fuente.duracion_s = duracion_s(fuente.ruta_local or fuente.referencia)
+        fuente.duracion_s = duracion_s(
+            fuente.ruta_local if en_disco else fuente.referencia
+        )
 
-    if fuente.tipo == "url" and not fuente.ruta_local:
-        log.info("Bajando el video de %s", fuente.referencia)
-        fuente.ruta_local = str(descargar(fuente.referencia, dir_trabajo))
-        fuente.duracion_s = fuente.duracion_s or duracion_s(fuente.ruta_local)
-
+    # -- YouTube ----------------------------------------------------------
     if fuente.tipo == "youtube":
+        if en_disco:
+            # Ya se había bajado: se usa el archivo.
+            if not _subida_vigente(fuente):
+                _subir(fuente, cliente)
+            return fuente
+
         largo = fuente.duracion_s or 0.0
-        if largo and largo > descargar_si_dura_mas_de_s and hay_ytdlp():
+        conviene_bajar = (
+            descargar_si_dura_mas_de_s > 0
+            and largo > descargar_si_dura_mas_de_s
+            and hay_ytdlp()
+        )
+        if conviene_bajar:
             # El audio entero viaja en cada pedido: para un partido completo
             # sale mucho más barato bajarlo una vez y subirlo.
             log.info(
@@ -205,21 +290,30 @@ def preparar(
             )
             try:
                 fuente.ruta_local = str(descargar(fuente.referencia, dir_trabajo))
-                fuente.uri_subida = cliente.subir_archivo(fuente.ruta_local)
+                _subir(fuente, cliente)
                 return fuente
-            except ErrorVideo as exc:
+            except Exception as exc:  # noqa: BLE001 - bajar es una mejora, no un requisito
                 log.warning(
-                    "No pude bajarlo (%s). Sigo con la URL de YouTube: andá "
-                    "mirando el consumo de tokens.", exc,
+                    "No pude bajarlo ni subirlo (%s). Sigo con la URL de "
+                    "YouTube: andá mirando el consumo de tokens.", exc,
                 )
+                fuente.ruta_local = None
         fuente.uri_subida = fuente.referencia
+        fuente.subido_en = None
         return fuente
 
+    # -- Otra URL: hay que bajarla sí o sí ---------------------------------
+    if fuente.tipo == "url" and not en_disco:
+        log.info("Bajando el video de %s", fuente.referencia)
+        fuente.ruta_local = str(descargar(fuente.referencia, dir_trabajo))
+        fuente.duracion_s = fuente.duracion_s or duracion_s(fuente.ruta_local)
+        fuente.uri_subida = None
+
+    # -- Archivo local (o URL ya bajada) ----------------------------------
     if not fuente.ruta_local:
         raise ErrorVideo("La fuente es un archivo pero no sé dónde está.")
-    if not fuente.uri_subida:
-        log.info("Subiendo %s por la Files API", Path(fuente.ruta_local).name)
-        fuente.uri_subida = cliente.subir_archivo(fuente.ruta_local)
+    if not _subida_vigente(fuente):
+        _subir(fuente, cliente)
     return fuente
 
 

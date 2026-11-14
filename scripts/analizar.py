@@ -43,7 +43,7 @@ from rugby_stats import excel, plantel as mod_plantel, precision as mod_precisio
 from rugby_stats.analisis import pipeline  # noqa: E402
 from rugby_stats.analisis.reglas import segundos_desde_reloj  # noqa: E402
 from rugby_stats.config import cargar_config  # noqa: E402
-from rugby_stats.db import BaseDatos  # noqa: E402
+from rugby_stats.db import BaseDatos, ruta_por_defecto  # noqa: E402
 from rugby_stats.gemini import video as video_mod  # noqa: E402
 from rugby_stats.gemini.cliente import crear_cliente  # noqa: E402
 from rugby_stats.modelos import Equipo, Partido  # noqa: E402
@@ -52,7 +52,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 
 
 def _base(cfg) -> BaseDatos:
-    return BaseDatos(RAIZ / "data" / "partidos.db")
+    return BaseDatos(ruta_por_defecto())
 
 
 def _barra(texto: str, fraccion: float) -> None:

@@ -20,6 +20,53 @@ from . import reglas
 log = logging.getLogger(__name__)
 
 
+def _alinear_tiempos(
+    filas: list[dict[str, Any]], campos: tuple[str, ...], ini: float, fin: float,
+    que: str,
+) -> list[dict[str, Any]]:
+    """Si los tiempos vinieron relativos al fragmento, los pasa al video.
+
+    ``campos`` son las claves que guardan tiempos ("t_segundos", o
+    "inicio_s" y "fin_s").
+    """
+    filas = [f for f in filas if isinstance(f, dict)]
+    tiempos = [f.get(c) for f in filas for c in campos]
+    corrimiento, relativos = reglas.corregir_tiempos(tiempos, ini, fin)
+    if relativos:
+        log.warning(
+            "%s: el modelo devolvió tiempos relativos al fragmento; les sumo %.0f s.",
+            que, corrimiento,
+        )
+        for f in filas:
+            for c in campos:
+                if isinstance(f.get(c), (int, float)):
+                    f[c] = float(f[c]) + corrimiento
+    return filas
+
+
+def _lista(datos: Any, clave: str) -> list[Any]:
+    """La lista pedida, aunque el modelo la devuelva suelta o venga otra cosa."""
+    if isinstance(datos, list):
+        return datos
+    if isinstance(datos, dict):
+        valor = datos.get(clave)
+        return valor if isinstance(valor, list) else []
+    return []
+
+
+def _json(respuesta: Any, etiqueta: str) -> Any:
+    """El JSON de una respuesta, o None si no se pudo leer.
+
+    Una ventana cuya respuesta vino cortada o vacía no tiene que tirar abajo
+    el análisis de todo el partido: se anota y se sigue con la siguiente.
+    """
+    try:
+        return respuesta.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No pude leer la respuesta de %s: %s", etiqueta, exc)
+        return None
+
+
 def _uri(partido: Partido) -> str:
     uri = partido.video.uri_subida or partido.video.referencia
     if not uri:
@@ -76,20 +123,27 @@ def pasada_gruesa(
                 etiqueta=f"gruesa {ini:.0f}-{fin:.0f}",
             )
         )
-        for d in (r.json() or {}).get("tramos", []):
+        crudos = _alinear_tiempos(
+            _lista(_json(r, f"gruesa {ini:.0f}"), "tramos"),
+            ("inicio_s", "fin_s"), ini, fin, "Pasada gruesa",
+        )
+        for d in crudos:
             try:
                 t = Tramo(
                     inicio_s=float(d["inicio_s"]),
                     fin_s=float(d["fin_s"]),
                     tipo="juego" if d.get("tipo") == "juego" else "muerto",
                     reloj_inicio=str(d.get("reloj") or ""),
-                    marcador_propio=d.get("marcador_local"),
-                    marcador_rival=d.get("marcador_visitante"),
-                    confianza=float(d.get("confianza") or 0),
+                    marcador_propio=_entero(d.get("marcador_local")),
+                    marcador_rival=_entero(d.get("marcador_visitante")),
+                    confianza=reglas.normalizar_confianza(d.get("confianza")),
                 )
             except (KeyError, TypeError, ValueError):
                 log.warning("Tramo mal formado, lo salto: %s", d)
                 continue
+            # Se recorta a la ventana pedida: el modelo a veces se pasa.
+            t.inicio_s = max(ini, t.inicio_s)
+            t.fin_s = min(fin, t.fin_s)
             if t.fin_s > t.inicio_s:
                 tramos.append(t)
 
@@ -104,6 +158,15 @@ def pasada_gruesa(
                 log.info("Desfase entre reloj y video: %.0f s", d)
                 break
     return tramos
+
+
+def _entero(valor: Any) -> int | None:
+    if valor is None or isinstance(valor, bool):
+        return None
+    try:
+        return int(float(valor))
+    except (TypeError, ValueError):
+        return None
 
 
 def _unir_tramos(tramos: list[Tramo]) -> list[Tramo]:
@@ -196,21 +259,34 @@ def pasada_fichas(
                 etiqueta=f"fichas {ini:.0f}-{fin:.0f}",
             )
         )
-        for d in (r.json() or {}).get("lecturas", []):
+        crudas = _alinear_tiempos(
+            _lista(_json(r, f"fichas {ini:.0f}"), "lecturas"),
+            ("t_segundos",), ini, fin, "Fichas",
+        )
+        for d in crudas:
             numero = reglas.limpiar_numero(d.get("numero"))
             if numero is None or numero not in objetivo:
                 continue
+            crudos_rasgos = d.get("rasgos")
             rasgos = {
-                k: str(val).strip()
-                for k, val in (d.get("rasgos") or {}).items()
-                if str(val).strip() and str(val).strip() != "no se ve"
+                str(k): str(val).strip()
+                for k, val in (
+                    crudos_rasgos.items() if isinstance(crudos_rasgos, dict) else []
+                )
+                if val is not None
+                and str(val).strip()
+                and str(val).strip().lower() not in ("no se ve", "null", "none", "n/a")
             }
+            try:
+                t_ficha = float(d.get("t_segundos"))
+            except (TypeError, ValueError):
+                t_ficha = ini
             ficha = Ficha(
                 jugador_numero=numero,
                 equipo=equipo.nombre,
-                t_segundos=float(d.get("t_segundos") or ini),
+                t_segundos=min(max(t_ficha, ini), fin),
                 rasgos=rasgos,
-                confianza=float(d.get("confianza") or 0),
+                confianza=reglas.normalizar_confianza(d.get("confianza")),
                 nota=str(d.get("nota") or ""),
             )
             fichas.append(ficha)
@@ -286,7 +362,11 @@ def pasada_eventos(
                 etiqueta=f"eventos {ini:.0f}-{fin:.0f}",
             )
         )
-        for d in (r.json() or {}).get("eventos", []):
+        crudos = _alinear_tiempos(
+            _lista(_json(r, f"eventos {ini:.0f}"), "eventos"),
+            ("t_segundos",), ini, fin, "Eventos",
+        )
+        for d in crudos:
             e = _dict_a_evento(d, partido, cfg)
             if e is None:
                 continue
@@ -294,7 +374,9 @@ def pasada_eventos(
             if not (ini - 0.5 <= e.t_segundos <= fin + 0.5):
                 continue
             eventos.append(e)
-            if d.get("revisar_contacto") or _es_contacto_dudoso(e, cfg):
+            if _es_contacto_dudoso(e, cfg) or (
+                d.get("revisar_contacto") and e.accion in ACCIONES_DE_CONTACTO
+            ):
                 a_revisar.append(
                     {
                         "t_segundos": e.t_segundos,
@@ -309,12 +391,55 @@ def pasada_eventos(
     return eventos, a_revisar
 
 
+#: Acciones que el re-examen a velocidad alta sabe resolver. Solo estas: el
+#: re-examen devuelve un portador y sus tackleadores, así que aplicarlo a un
+#: ruck o a una pelota perdida inventaría un carry y un tackle que no hubo.
+ACCIONES_DE_CONTACTO = ("Tackle", "Tackle errado", "Carry")
+
+
 def _es_contacto_dudoso(e: Evento, cfg: Config) -> bool:
-    de_contacto = e.accion in ("Tackle", "Tackle errado", "Carry", "Ruck limpiado",
-                               "Pelota perdida", "Pelota recuperada")
-    return de_contacto and (
-        e.jugador_numero is None or e.confianza < cfg.umbral_confianza_revision
+    return e.accion in ACCIONES_DE_CONTACTO and (
+        e.jugador_numero is None
+        or not e.resultado
+        or e.confianza < cfg.umbral_confianza_revision
     )
+
+
+def agrupar_contactos(
+    a_revisar: list[dict[str, Any]], ventana_s: float = 2.0
+) -> list[dict[str, Any]]:
+    """Junta los avisos que son el mismo contacto.
+
+    A velocidad media, un mismo choque suele salir como dos eventos (el carry
+    del portador y el tackle del defensor), los dos marcados para revisar. Es
+    un solo contacto y se re-examina una sola vez.
+    """
+    grupos: list[dict[str, Any]] = []
+    for item in sorted(a_revisar, key=lambda x: float(x["t_segundos"])):
+        t = float(item["t_segundos"])
+        if grupos and t - grupos[-1]["_ultimo"] <= ventana_s:
+            g = grupos[-1]
+            g["_tiempos"].append(t)
+            g["_ultimo"] = t
+            if item.get("pista"):
+                g["_pistas"].append(str(item["pista"]))
+        else:
+            grupos.append(
+                {
+                    "_tiempos": [t],
+                    "_ultimo": t,
+                    "_pistas": [str(item["pista"])] if item.get("pista") else [],
+                }
+            )
+    return [
+        {
+            "t_segundos": sum(g["_tiempos"]) / len(g["_tiempos"]),
+            "desde_s": min(g["_tiempos"]),
+            "hasta_s": max(g["_tiempos"]),
+            "pista": "; ".join(dict.fromkeys(g["_pistas"])),
+        }
+        for g in grupos
+    ]
 
 
 def _dict_a_evento(d: dict[str, Any], partido: Partido, cfg: Config) -> Evento | None:
@@ -334,12 +459,14 @@ def _dict_a_evento(d: dict[str, Any], partido: Partido, cfg: Config) -> Evento |
     return Evento(
         t_segundos=t,
         accion=accion,
-        resultado=str(d.get("resultado") or ""),
+        resultado=reglas.normalizar_resultado(accion, d.get("resultado")),
         equipo=reglas.nombre_equipo(str(d.get("equipo") or ""), propio, rival),
         jugador_numero=reglas.limpiar_numero(d.get("numero")),
         jugadores_secundarios=secundarios,
-        metros=float(metros) if isinstance(metros, (int, float)) else None,
-        confianza=float(d.get("confianza") or 0),
+        metros=float(metros)
+        if isinstance(metros, (int, float)) and not isinstance(metros, bool)
+        else None,
+        confianza=reglas.normalizar_confianza(d.get("confianza")),
         reloj=reglas.reloj_desde_video(t, partido.video.desfase_s),
         nota=str(d.get("nota") or ""),
         fuente="video",
@@ -396,15 +523,19 @@ def revisar_contactos(
     cfg: Config,
     a_revisar: list[dict[str, Any]],
     progreso=None,
-) -> list[Evento]:
+) -> list[dict[str, Any]]:
     """Vuelve a mirar cada contacto dudoso con muchos más cuadros por segundo.
 
     Acá se resuelve quién tackleó y si el portador avanzó, que son los dos
     datos que a 2 cuadros por segundo no salen. El criterio de positivo o
     negativo lo aplica ``reglas.clasificar_tackle`` sobre la observación.
+
+    Devuelve un contacto por elemento: ``{"t_segundos", "desde_s", "hasta_s",
+    "eventos"}``. Quien llama decide cómo se combinan con lo que ya había.
     """
     v = cfg.velocidad("contacto")
-    resueltos: list[Evento] = []
+    a_revisar = agrupar_contactos(a_revisar)
+    resueltos: list[dict[str, Any]] = []
     propio = partido.equipo_propio.nombre
     rival = partido.equipo_rival.nombre
     numeros_propios = reglas.numeros_del_plantel(jugadores_propios)
@@ -442,7 +573,8 @@ def revisar_contactos(
                     etiqueta=f"contacto {t:.1f} intento {intentos}",
                 )
             )
-            datos = r.json() or {}
+            leido = _json(r, f"contacto {t:.1f}")
+            datos = leido if isinstance(leido, dict) else {}
             # "Sin clasificar no vale": si no salió ni el tackleador ni el
             # avance, se amplía la ventana y se suben los cuadros por segundo.
             falta = not datos.get("tackleadores") or datos.get(
@@ -455,10 +587,15 @@ def revisar_contactos(
             fin = fin + 1.0
             fps = min(24.0, fps * 1.5)
 
-        resueltos.extend(
-            _contacto_a_eventos(
-                datos, t, partido, cfg, numeros_propios, numeros_rivales
-            )
+        resueltos.append(
+            {
+                "t_segundos": t,
+                "desde_s": float(item.get("desde_s", t)),
+                "hasta_s": float(item.get("hasta_s", t)),
+                "eventos": _contacto_a_eventos(
+                    datos, t, partido, cfg, numeros_propios, numeros_rivales
+                ),
+            }
         )
 
     return resueltos
@@ -477,11 +614,19 @@ def _contacto_a_eventos(
     rival = partido.equipo_rival.nombre
     eventos: list[Evento] = []
 
-    avance = str(datos.get("avance_portador") or "")
+    avance = reglas._plano(datos.get("avance_portador")).replace(" ", "_")
     metros = datos.get("metros_avance")
-    metros = float(metros) if isinstance(metros, (int, float)) else None
-    conf = float(datos.get("confianza") or 0)
-    conf_id = float(datos.get("confianza_identificacion") or conf)
+    metros = (
+        float(metros)
+        if isinstance(metros, (int, float)) and not isinstance(metros, bool)
+        else None
+    )
+    conf = reglas.normalizar_confianza(datos.get("confianza"))
+    conf_id = (
+        reglas.normalizar_confianza(datos.get("confianza_identificacion"))
+        if datos.get("confianza_identificacion") is not None
+        else conf
+    )
     nota = str(datos.get("nota") or "")
     reloj = reglas.reloj_desde_video(t, partido.video.desfase_s)
 
@@ -521,11 +666,14 @@ def _contacto_a_eventos(
         )
 
     # Un evento de tackle por cada tackleador.
-    tackleadores = [
-        n
-        for n in (reglas.limpiar_numero(x) for x in (datos.get("tackleadores") or []))
-        if n is not None
-    ]
+    crudos_t = datos.get("tackleadores")
+    if not isinstance(crudos_t, list):
+        crudos_t = [crudos_t] if crudos_t is not None else []
+    tackleadores = list(
+        dict.fromkeys(
+            n for n in (reglas.limpiar_numero(x) for x in crudos_t) if n is not None
+        )
+    )
     completado = bool(datos.get("tackle_completado", True))
     resultado_tackle = reglas.clasificar_tackle(avance, cfg, metros)
 
@@ -619,7 +767,11 @@ def pasada_relato(
                 etiqueta=f"relato {ini:.0f}-{fin:.0f}",
             )
         )
-        for d in (r.json() or {}).get("fragmentos", []):
+        crudos = _alinear_tiempos(
+            _lista(_json(r, f"relato {ini:.0f}"), "fragmentos"),
+            ("inicio_s", "fin_s"), ini, fin, "Relato",
+        )
+        for d in crudos:
             try:
                 fragmentos.append(
                     {
@@ -685,7 +837,11 @@ def pasada_cambios(
                 etiqueta=f"cambios {ini:.0f}-{fin:.0f}",
             )
         )
-        for d in (r.json() or {}).get("cambios", []):
+        crudos = _alinear_tiempos(
+            _lista(_json(r, f"cambios {ini:.0f}"), "cambios"),
+            ("t_segundos",), ini, fin, "Cambios",
+        )
+        for d in crudos:
             try:
                 t = float(d["t_segundos"])
             except (KeyError, TypeError, ValueError):
@@ -700,7 +856,7 @@ def pasada_cambios(
                     "entra": reglas.limpiar_numero(d.get("entra")),
                     "sale": reglas.limpiar_numero(d.get("sale")),
                     "como_lo_supe": str(d.get("como_lo_supe") or ""),
-                    "confianza": float(d.get("confianza") or 0),
+                    "confianza": reglas.normalizar_confianza(d.get("confianza")),
                     "nota": str(d.get("nota") or ""),
                 }
             )

@@ -244,7 +244,7 @@ izquierdo")
 - pelo: largo y color ("oscuro corto", "claro largo", "rapado")
 - contextura: "flaco", "mediano", "robusto"
 - medias: si tienen algo distinto (bajas, de otro color, rotas)
-- muñequeras: "no", o el color
+- munequeras (muñequeras): "no", o el color
 - protector_bucal: solo si es de un color llamativo
 - otro: cualquier cosa que lo distinga (barba, tatuaje visible, camiseta por \
 fuera del short)

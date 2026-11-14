@@ -59,6 +59,21 @@ with st.expander("Cuánto video se va a analizar y qué cuesta", expanded=True):
             "segundo de video en resolución baja (300 en alta), no una medición: "
             "el número real lo ves en Google AI Studio."
         )
+        from rugby_stats.gemini import video as video_mod
+
+        if (
+            partido.video.tipo == "youtube"
+            and not partido.video.ruta_local
+            and (duracion or 0) > cfg.descargar_si_dura_mas_de_s > 0
+            and video_mod.hay_ytdlp()
+        ):
+            st.info(
+                f"El video dura {duracion / 60:.0f} minutos, así que la primera "
+                "vez se baja y se sube a Google antes de empezar (pasando el "
+                "link directo, el audio del video entero viaja en cada pedido). "
+                "Puede tardar varios minutos según tu conexión; después no se "
+                "repite."
+            )
         if largo > 1200:
             st.info(
                 "Para la primera corrida conviene un tramo de cinco o diez "

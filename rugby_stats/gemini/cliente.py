@@ -28,6 +28,13 @@ from typing import Any, Callable
 log = logging.getLogger(__name__)
 
 
+_RESOLUCIONES = (
+    "MEDIA_RESOLUTION_LOW",
+    "MEDIA_RESOLUTION_MEDIUM",
+    "MEDIA_RESOLUTION_HIGH",
+)
+
+
 class ErrorGemini(RuntimeError):
     pass
 
@@ -288,13 +295,16 @@ class ClienteGemini:
             if p.fps is not None:
                 # La API acepta hasta 24 cuadros por segundo.
                 meta_kwargs["fps"] = float(min(24.0, max(0.01, p.fps)))
-            parte = types.Part(
-                file_data=types.FileData(file_uri=p.video_uri, mime_type=p.video_mime),
-                video_metadata=types.VideoMetadata(**meta_kwargs) if meta_kwargs else None,
+            partes.append(
+                types.Part(
+                    file_data=types.FileData(
+                        file_uri=p.video_uri, mime_type=p.video_mime
+                    ),
+                    video_metadata=types.VideoMetadata(**meta_kwargs)
+                    if meta_kwargs
+                    else None,
+                )
             )
-            if p.resolucion and p.resolucion != "MEDIA_RESOLUTION_UNSPECIFIED":
-                parte.media_resolution = p.resolucion
-            partes.append(parte)
         partes.append(types.Part(text=p.prompt))
         return partes
 
@@ -302,6 +312,11 @@ class ClienteGemini:
         from google.genai import types
 
         kwargs: dict[str, Any] = {"temperature": self.temperatura}
+        # La resolución va a nivel del pedido (hay un solo video por pedido).
+        # A nivel de la parte el SDK espera otro tipo de objeto y no todos los
+        # modelos lo aceptan.
+        if p.video_uri and p.resolucion in _RESOLUCIONES:
+            kwargs["media_resolution"] = p.resolucion
         if p.esquema:
             kwargs["response_mime_type"] = "application/json"
             kwargs["response_schema"] = p.esquema

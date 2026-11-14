@@ -54,7 +54,7 @@ class Resultado:
 
     def resumen(self) -> str:
         partes = [
-            f"{self.eventos_nuevos} eventos ({self.eventos_pendientes} pendientes)",
+            f"{self.eventos_nuevos} eventos en total ({self.eventos_pendientes} pendientes)",
             f"{self.fichas_nuevas} fichas",
             f"{self.tramos} tramos",
         ]
@@ -226,12 +226,11 @@ def correr(
             cliente, partido, propios, rivales, fichas, cfg, a_revisar,
             _sub(progreso, "contactos", 0.7, 0.9),
         )
-        resueltos = _validar(resueltos, propios, rivales, cfg)
-        # Los eventos del re-examen reemplazan a los dudosos del mismo instante.
-        _reemplazar_en_contactos(db, partido_id, resueltos, cfg)
-        res.eventos_nuevos += len(resueltos)
+        for contacto in resueltos:
+            contacto["eventos"] = _validar(contacto["eventos"], propios, rivales, cfg)
+        _combinar_contactos(db, partido_id, resueltos)
         db.marcar_progreso(
-            partido_id, "contactos", "listo", f"{len(resueltos)} contactos resueltos"
+            partido_id, "contactos", "listo", f"{len(resueltos)} contactos re-examinados"
         )
         res.pasos_corridos.append("contactos")
 
@@ -256,7 +255,9 @@ def correr(
         db.marcar_progreso(partido_id, "cambios", "listo", f"{len(cambios)} cambios")
         res.pasos_corridos.append("cambios")
 
-    res.eventos_pendientes = len(db.eventos(partido_id, solo_pendientes=True))
+    todos = db.eventos(partido_id)
+    res.eventos_nuevos = len(todos)
+    res.eventos_pendientes = len([e for e in todos if e.pendiente])
     res.contadores = getattr(cliente, "contadores", None)
     _avisar(progreso, "Listo", 1.0)
     return res
@@ -286,24 +287,75 @@ def _validar(
     return eventos
 
 
-def _reemplazar_en_contactos(
-    db: BaseDatos, partido_id: int, resueltos: list[Evento], cfg: Config
+def _combinar_contactos(
+    db: BaseDatos, partido_id: int, contactos: list[dict[str, Any]]
 ) -> None:
-    """Pone los eventos del re-examen en lugar de los dudosos del mismo momento."""
-    existentes = db.eventos(partido_id)
-    for nuevo in resueltos:
+    """Combina lo que dio el re-examen con lo que había de la pasada de juego.
+
+    La regla es no perder información ni duplicarla:
+
+    - Lo que ya revisó una persona no se toca nunca.
+    - Si el re-examen identificó a los jugadores, sus eventos reemplazan a los
+      dudosos del mismo contacto.
+    - Si el re-examen no pudo identificar (devolvió el jugador vacío) pero la
+      pasada de juego sí tenía un nombre, se conserva ese nombre —que seguirá
+      en la cola por su confianza baja— y solo se le completa el resultado.
+      Cambiar una pista floja por un "sin identificar" sería retroceder.
+    """
+    margen = 1.5
+    for contacto in contactos:
+        desde = contacto["desde_s"] - margen
+        hasta = contacto["hasta_s"] + margen
         viejos = [
             e
-            for e in existentes
-            if abs(e.t_segundos - nuevo.t_segundos) <= 1.5
-            and e.accion == nuevo.accion
+            for e in db.eventos(partido_id)
+            if desde <= e.t_segundos <= hasta
+            and e.accion in pasadas.ACCIONES_DE_CONTACTO
             and not e.revisado
         ]
-        if viejos:
-            viejo = viejos[0]
-            nuevo.id = viejo.id
-            existentes.remove(viejo)
-        db.guardar_evento(partido_id, nuevo)
+        for familia in (("Carry",), ("Tackle", "Tackle errado")):
+            nuevos_f = [e for e in contacto["eventos"] if e.accion in familia]
+            viejos_f = [e for e in viejos if e.accion in familia]
+            if not nuevos_f:
+                continue  # el re-examen no dijo nada de esto: queda lo que había
+            identificados = [e for e in nuevos_f if e.jugador_numero is not None]
+            viejos_con_nombre = [e for e in viejos_f if e.jugador_numero is not None]
+
+            if not identificados and viejos_con_nombre:
+                # Se conserva la pista vieja y se le completa lo que falte.
+                referencia = nuevos_f[0]
+                for viejo in viejos_con_nombre:
+                    if not viejo.resultado and referencia.resultado:
+                        viejo.resultado = referencia.resultado
+                    if viejo.metros is None and referencia.metros is not None:
+                        viejo.metros = referencia.metros
+                    viejo.pendiente = not viejo.esta_clasificado()
+                    viejo.nota = (
+                        viejo.nota + " | el re-examen no pudo confirmar al jugador"
+                    ).strip(" |")
+                    db.guardar_evento(partido_id, viejo)
+                for viejo in viejos_f:
+                    if viejo.jugador_numero is None and viejo.id is not None:
+                        db.borrar_evento(viejo.id)
+                continue
+
+            for viejo in viejos_f:
+                if viejo.id is not None:
+                    db.borrar_evento(viejo.id)
+            for nuevo in nuevos_f:
+                db.guardar_evento(partido_id, nuevo)
+
+        # Lo demás que trae el re-examen (por ejemplo un knock-on) se agrega
+        # si no estaba ya.
+        for nuevo in contacto["eventos"]:
+            if nuevo.accion in pasadas.ACCIONES_DE_CONTACTO:
+                continue
+            repetido = any(
+                e.accion == nuevo.accion and desde <= e.t_segundos <= hasta
+                for e in db.eventos(partido_id)
+            )
+            if not repetido:
+                db.guardar_evento(partido_id, nuevo)
 
 
 def _avisar(progreso, texto: str, fraccion: float) -> None:

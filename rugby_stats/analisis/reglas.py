@@ -195,14 +195,99 @@ def calcular_desfase(reloj_visto: str, t_video_s: float) -> float | None:
 # ---------------------------------------------------------------------------
 
 
+def _plano(texto: str) -> str:
+    """Minúsculas, sin tildes y sin espacios de más: para comparar."""
+    import unicodedata
+
+    sin_tildes = "".join(
+        c
+        for c in unicodedata.normalize("NFD", str(texto or ""))
+        if unicodedata.category(c) != "Mn"
+    )
+    return " ".join(sin_tildes.lower().replace("_", " ").split())
+
+
 def nombre_equipo(etiqueta: str, propio: str, rival: str) -> str:
-    """El modelo contesta "propio"/"rival"; acá se traduce al club real."""
-    e = (etiqueta or "").strip().lower()
-    if e in ("propio", "local_propio", "nosotros"):
+    """El modelo contesta "propio"/"rival"; acá se traduce al club real.
+
+    También se acepta que conteste con el nombre del club, escrito con otra
+    capitalización o sin tildes. Si no se reconoce, devuelve cadena vacía: un
+    equipo desconocido es mejor que uno mal escrito que después no coincide
+    con ningún plantel.
+    """
+    e = _plano(etiqueta)
+    if not e:
+        return ""
+    if e in ("propio", "local propio", "nosotros", "equipo propio"):
         return propio
-    if e in ("rival", "visitante_rival", "ellos"):
+    if e in ("rival", "visitante rival", "ellos", "equipo rival"):
         return rival
-    return etiqueta or ""
+    if e == _plano(propio):
+        return propio
+    if e == _plano(rival):
+        return rival
+    return ""
+
+
+def normalizar_resultado(accion: str, resultado: Any) -> str:
+    """Lleva el resultado a la forma exacta del vocabulario.
+
+    El modelo puede contestar "Positivo", "al Touch" o "knock on": es el mismo
+    resultado y no tiene sentido mandarlo a la cola por una mayúscula. Lo que
+    no se reconoce se devuelve tal cual, y lo frena la validación.
+    """
+    crudo = str(resultado or "").strip()
+    if not crudo:
+        return ""
+    validos = RESULTADOS.get(accion, ())
+    if crudo in validos:
+        return crudo
+    plano = _plano(crudo).replace("-", " ")
+    for v in validos:
+        if _plano(v).replace("-", " ") == plano:
+            return v
+    return crudo
+
+
+def normalizar_confianza(valor: Any) -> float:
+    """Confianza entre 0 y 1, venga como venga (0.8, 80, "0,8", None)."""
+    if valor is None:
+        return 0.0
+    try:
+        c = float(str(valor).replace(",", ".").replace("%", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+    if c > 1.0:
+        c = c / 100.0  # vino como porcentaje
+    return max(0.0, min(1.0, c))
+
+
+def corregir_tiempos(
+    tiempos: list[float], inicio_s: float, fin_s: float
+) -> tuple[float, bool]:
+    """¿Los tiempos vinieron relativos al fragmento en vez de al video?
+
+    Se le pide al modelo tiempos del video completo, pero al mirar un recorte
+    puede contestar contando desde el principio del recorte (0, 12, 47…).
+    Si eso pasa, sin esta corrección todos los eventos caerían fuera de la
+    ventana y se descartarían en silencio.
+
+    Devuelve ``(corrimiento, eran_relativos)``: lo que hay que sumarle a cada
+    tiempo. Solo corrige cuando la evidencia es clara: la mayoría de los
+    tiempos entra en el largo del fragmento y casi ninguno cae en la ventana.
+    """
+    validos = [float(t) for t in tiempos if isinstance(t, (int, float))]
+    largo = fin_s - inicio_s
+    if not validos or largo <= 0 or inicio_s <= largo:
+        # Si la ventana arranca cerca del cero, las dos lecturas coinciden y
+        # no hay nada que decidir.
+        return 0.0, False
+    margen = 2.0
+    en_ventana = sum(1 for t in validos if inicio_s - margen <= t <= fin_s + margen)
+    como_relativos = sum(1 for t in validos if -margen <= t <= largo + margen)
+    if como_relativos > en_ventana and como_relativos >= len(validos) / 2:
+        return float(inicio_s), True
+    return 0.0, False
 
 
 def etiqueta_equipo(nombre: str, propio: str) -> str:
@@ -212,10 +297,13 @@ def etiqueta_equipo(nombre: str, propio: str) -> str:
 
 def limpiar_numero(valor: Any) -> int | None:
     """Un número de camiseta, o None. Nunca revienta."""
-    if valor is None:
+    if valor is None or isinstance(valor, bool):
         return None
     try:
-        n = int(valor)
+        f = float(str(valor).strip().lstrip("#").replace(",", "."))
     except (TypeError, ValueError):
         return None
+    if f != int(f):
+        return None  # 9.5 no es un número de camiseta
+    n = int(f)
     return n if 1 <= n <= 99 else None

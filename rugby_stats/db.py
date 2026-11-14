@@ -133,6 +133,16 @@ CREATE INDEX IF NOT EXISTS ix_tramos_partido ON tramos(partido_id, inicio_s);
 """
 
 
+def ruta_por_defecto() -> Path:
+    """Dónde vive la base. Se puede mover con la variable RUGBY_STATS_DB."""
+    import os
+
+    de_entorno = os.environ.get("RUGBY_STATS_DB")
+    if de_entorno:
+        return Path(de_entorno)
+    return Path(__file__).resolve().parent.parent / "data" / "partidos.db"
+
+
 def _ahora() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -549,6 +559,10 @@ class BaseDatos:
             (partido_id,),
         ).fetchall()
         return [self._fila_a_evento(f) for f in filas]
+
+    def borrar_evento(self, evento_id: int) -> None:
+        with self.tx() as con:
+            con.execute("DELETE FROM eventos WHERE id=?", (evento_id,))
 
     def borrar_eventos(self, partido_id: int, desde_s: float = 0.0,
                        hasta_s: float | None = None) -> None:
