@@ -32,6 +32,9 @@ SUPUESTOS = {
     "ventanas_fichas": 8,
     # Texto fijo de cada pedido: instrucciones, plantel, esquema.
     "tokens_texto_por_pedido": 3000,
+    # En eventos y contactos casi todo ese texto va en caché (se cobra al
+    # 10%): solo cambia esto por pedido.
+    "tokens_texto_variable": 400,
     # Tokens de las fichas visuales que van en cada pedido de eventos y
     # contactos (unos 23 recortes chicos).
     "tokens_fichas_visuales": 2500,
@@ -106,8 +109,13 @@ def estimar(segundos: float, cfg: Config, pasos: list[str] | None = None) -> Est
         nivel = nivel or cfg.nivel_de(paso)
         modelo = cfg.niveles_claude.get(nivel, cfg.niveles_claude.get("fuerte", ["claude-sonnet-5-5"]))[0]
         p = _precio(cfg, modelo)
-        entrada = pedidos * texto + cuadros * tok_cuadro
-        cache_total = pedidos * cache
+        texto_cache = 0
+        txt = texto
+        if paso in ("eventos", "contactos", "experto"):
+            txt = s["tokens_texto_variable"]
+            texto_cache = texto - txt
+        entrada = pedidos * txt + cuadros * tok_cuadro
+        cache_total = pedidos * (cache + texto_cache)
         salida = pedidos * s["salida"].get(paso, 800)
         usd = (
             entrada * p.get("entrada", 0)

@@ -27,7 +27,12 @@ export const sql = globalThis.__sql ?? (globalThis.__sql = conectar());
 /** Crea las tablas que falten, una sola vez por servidor. */
 export function prepararBase(): Promise<void> {
   if (!globalThis.__esquemaListo) {
-    globalThis.__esquemaListo = sql.unsafe(ESQUEMA).then(() => undefined).catch((e) => {
+    // Con un candado: si la app y la compu arrancan a la vez, no chocan al
+    // crear las tablas.
+    globalThis.__esquemaListo = sql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(727274)`;
+      await tx.unsafe(ESQUEMA);
+    }).then(() => undefined).catch((e) => {
       globalThis.__esquemaListo = undefined;
       throw e;
     });
@@ -100,5 +105,23 @@ export async function compu(): Promise<{ conectada: boolean; estado: string; hac
   const f = await sql<{ estado: string; hace_s: number | null }[]>`
     SELECT estado, EXTRACT(EPOCH FROM (now() - ultimo_latido))::float AS hace_s FROM compu WHERE id = 1`;
   if (!f[0] || f[0].hace_s === null) return { conectada: false, estado: "", hace_s: null };
-  return { conectada: f[0].hace_s < 90, estado: f[0].estado, hace_s: f[0].hace_s };
+  // Sin trabajo, la compu se reporta cada 15 minutos (para que la base pueda
+  // dormirse), así que "conectada" es haberse reportado hace menos de 20.
+  return { conectada: f[0].hace_s < 20 * 60, estado: f[0].estado, hace_s: f[0].hace_s };
+}
+
+/** Despierta a la compu al instante: le manda un aviso por su canal de ntfy. */
+export async function avisarCompu(): Promise<void> {
+  try {
+    const [c] = await sql<{ aviso: string }[]>`SELECT aviso FROM compu WHERE id = 1`;
+    if (!c?.aviso) return;
+    const base = process.env.NTFY_BASE || "https://ntfy.sh";
+    await fetch(`${base}/${c.aviso}`, {
+      method: "POST",
+      body: "trabajo",
+      signal: AbortSignal.timeout(4000),
+    });
+  } catch {
+    // Si no llega, la compu igual lo encuentra en su próxima vuelta.
+  }
 }

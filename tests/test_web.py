@@ -79,10 +79,19 @@ class _ClaudeFalso(http.server.BaseHTTPRequestHandler):
     """Contesta como la API de Claude leyendo una foto de formación."""
     vistos: list = []
 
+    avisos: list = []
+
     def do_POST(self):  # noqa: N802
         import json as _json
 
-        cuerpo = _json.loads(self.rfile.read(int(self.headers["content-length"])))
+        crudo = self.rfile.read(int(self.headers.get("content-length") or 0))
+        if not self.path.startswith("/v1/messages"):
+            # Hace de ntfy: registra el aviso a la compu.
+            _ClaudeFalso.avisos.append((self.path, crudo.decode()))
+            self.send_response(200)
+            self.end_headers()
+            return
+        cuerpo = _json.loads(crudo)
         _ClaudeFalso.vistos.append(cuerpo)
         jugadores = [{"numero": n, "nombre": f"Jugador {n}", "apodo": "Curu" if n == 4 else None}
                      for n in range(1, 24)]
@@ -113,6 +122,7 @@ def app(base_pg, claude_falso):
     puerto = _puerto()
     entorno = {**os.environ, "DATABASE_URL": base_pg, "APP_PASSWORD": CLAVE,
                "ANTHROPIC_API_KEY": "sk-ant-prueba", "ANTHROPIC_BASE_URL": claude_falso,
+               "NTFY_BASE": claude_falso,
                "PORT": str(puerto), "NODE_ENV": "production"}
     proc = subprocess.Popen(["npx", "next", "start", "-p", str(puerto)], cwd=WEB, env=entorno,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

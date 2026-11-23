@@ -315,7 +315,8 @@ def prompt_eventos(
     relato: str = "",
     solo_propio: bool = False,
     solo_tackles: bool = False,
-) -> str:
+    partes: bool = False,
+):
     bloque_foco = ""
     if solo_tackles:
         bloque_foco = f"""
@@ -348,7 +349,9 @@ anotás en "nota". Si el relato nombra a alguien que el video no te deja \
 confirmar, usalo con confianza más baja y poné "relato" en la nota.
 """
 
-    return f"""{ENCABEZADO}
+    # Lo fijo (igual en todas las ventanas del partido) va primero, para la
+    # caché de Claude; el relato y los tiempos de esta ventana, al final.
+    fijo = f"""{ENCABEZADO}
 
 {describir_equipos(propio, rival)}
 
@@ -357,9 +360,7 @@ confirmar, usalo con confianza más baja y poné "relato" en la nota.
 {describir_plantel(jugadores_rivales, f"Plantel de {rival.nombre} (rival)")}
 
 {describir_fichas(fichas_propias, jugadores_propios)}
-{bloque_foco}{bloque_relato}
-{_tiempos(inicio_s, fin_s)}
-
+{bloque_foco}
 {_vocabulario_acciones()}
 
 TAREA: listar las acciones que pasan en este tramo, una por una, con quién las \
@@ -386,6 +387,13 @@ momento de la jugada real.
 
 Si en una jugada no podés separar quién hizo qué, devolvé el evento con el \
 número en null y confianza baja antes que atribuirlo al jugador equivocado."""
+    variable = f"""ESTA VENTANA:
+{bloque_relato}
+{_tiempos(inicio_s, fin_s)}"""
+    if partes:
+        return fijo, variable
+    return fijo + "\n\n" + variable
+
 
 
 # ---------------------------------------------------------------------------
@@ -444,30 +452,24 @@ def prompt_contacto(
     solo_propio: bool = False,
     en_cancha: list[int] | None = None,
     t_contacto: float | None = None,
-) -> str:
-    bloque_pista = f"\nLo que se detectó a menor velocidad: {pista}\n" if pista else ""
-    if t_contacto is not None:
-        bloque_pista += (
-            f"\nEl contacto es alrededor del segundo {t_contacto:.1f}. Se te "
-            "muestran también los segundos de DESPUÉS a propósito: cuando el "
-            "tackleador se levanta, se da vuelta y vuelve a la línea, muchas "
-            "veces se le ve el número en la espalda. Seguilo con la vista hasta "
-            "el final de los cuadros.\n"
-        )
-    if en_cancha:
-        bloque_pista += (
-            "\nJugadores propios EN CANCHA en este momento (según los cambios "
-            f"detectados): {', '.join(str(n) for n in sorted(en_cancha))}. Un "
-            "número que no esté en esta lista no puede ser el tackleador.\n"
-        )
+    partes: bool = False,
+):
+    """El pedido del re-examen de un contacto.
+
+    Con ``partes=True`` devuelve ``(fijo, variable)``: lo fijo (equipos,
+    planteles, fichas e instrucciones) es igual en todos los contactos del
+    partido y va primero, para que Claude lo guarde en caché y lo cobre al
+    10%; lo variable (este momento) va al final.
+    """
+    foco = ""
     if solo_propio:
-        bloque_pista += f"""
+        foco = f"""
 FOCO: solo hace falta identificar a los jugadores de {propio.nombre} (el \
 equipo "propio"). Del rival alcanza con decir que es rival: dejá su número en \
 null y no gastes atención en reconocerlo. Toda tu atención va a cuál o cuáles \
 jugadores propios participan del contacto.
 """
-    return f"""{ENCABEZADO}
+    fijo = f"""{ENCABEZADO}
 
 {describir_equipos(propio, rival)}
 
@@ -476,11 +478,9 @@ jugadores propios participan del contacto.
 {describir_plantel(jugadores_rivales, f"Plantel de {rival.nombre} (rival)")}
 
 {describir_fichas(fichas_propias, jugadores_propios)}
-{bloque_pista}
-{_tiempos(inicio_s, fin_s)}
-
-Estás viendo unos pocos segundos a muchos cuadros por segundo. Este es el \
-momento del contacto.
+{foco}
+Vas a ver unos pocos segundos alrededor de un contacto, a muchos cuadros por \
+segundo.
 
 TAREA: resolver el contacto, cuadro por cuadro.
 
@@ -523,6 +523,28 @@ El número de la espalda casi nunca se ve en el contacto. Reconocé por las \
 fotos y los rasgos de las fichas: casco, vincha, vendas, color de botines, \
 contextura. Si dos jugadores podrían ser el que viste, dejalo afuera de \
 "tackleadores" y ponelos a los dos en "candidatos"."""
+
+    variable = "ESTE CONTACTO:\n"
+    if pista:
+        variable += f"\nLo que se detectó a menor velocidad: {pista}\n"
+    if t_contacto is not None:
+        variable += (
+            f"\nEl contacto es alrededor del segundo {t_contacto:.1f}. Se te "
+            "muestran también los segundos de DESPUÉS a propósito: cuando el "
+            "tackleador se levanta, se da vuelta y vuelve a la línea, muchas "
+            "veces se le ve el número en la espalda. Seguilo con la vista hasta "
+            "el final de los cuadros.\n"
+        )
+    if en_cancha:
+        variable += (
+            "\nJugadores propios EN CANCHA en este momento (según los cambios "
+            f"detectados): {', '.join(str(n) for n in sorted(en_cancha))}. Un "
+            "número que no esté en esta lista no puede ser el tackleador.\n"
+        )
+    variable += "\n" + _tiempos(inicio_s, fin_s)
+    if partes:
+        return fijo, variable
+    return fijo + "\n\n" + variable
 
 
 ESQUEMA_LOCALIZAR = {

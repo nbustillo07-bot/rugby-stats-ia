@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { prepararBase, sql } from "@/lib/db";
+import { avisarCompu, prepararBase, sql } from "@/lib/db";
 import { abrirSesion, exigirSesion } from "@/lib/sesion";
 import { aSegundos, leerPlantel } from "@/lib/tackles";
 import { normalizar } from "@/lib/club";
@@ -26,6 +26,7 @@ export async function crearPartido(_: EstadoForm, datos: FormData): Promise<Esta
     for (const [k, v] of datos.entries()) if (typeof v === "string") valores[k] = v;
     return { error: r, valores };
   }
+  await avisarCompu();
   redirect(`/partido/${r}`);
 }
 
@@ -101,6 +102,7 @@ export async function analizarDeNuevo(id: number): Promise<void> {
     await sql`INSERT INTO trabajos (partido_id) VALUES (${id})`;
     await sql`UPDATE partidos SET estado = 'en_cola', avance = 0, mensaje = 'Esperando a la compu…',
               actualizado = now() WHERE id = ${id}`;
+    await avisarCompu();
   }
   revalidatePath(`/partido/${id}`);
 }

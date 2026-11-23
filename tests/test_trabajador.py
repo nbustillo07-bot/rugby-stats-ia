@@ -192,3 +192,36 @@ def test_el_album_se_usa_y_se_alimenta(nube, db, video, tmp_path, monkeypatch):
     with nube.cursor() as cur:
         cur.execute("SELECT count(*) FROM fotos_persona WHERE origen='partido'")
         assert cur.fetchone()[0] == len(nuevas)
+
+
+def test_el_despertador_escucha_los_avisos(tmp_path):
+    """La app avisa por ntfy y la compu se despierta sin esperar su vuelta."""
+    import http.server
+    import threading
+
+    class Ntfy(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"event":"open"}\n{"event":"keepalive"}\n')
+            self.wfile.write(b'{"event":"message","message":"trabajo"}\n')
+            self.wfile.flush()
+
+        def log_message(self, *a):
+            pass
+
+    servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ntfy)
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    d = trabajador.Despertador("canal", base=f"http://127.0.0.1:{servidor.server_address[1]}")
+    d.start()
+    try:
+        assert d.esperar(10) is True
+    finally:
+        d.parar()
+        servidor.shutdown()
+
+
+def test_el_canal_de_aviso_es_siempre_el_mismo(tmp_path):
+    a = trabajador.canal_de_aviso(tmp_path)
+    assert a.startswith("rugby-stats-") and len(a) > 25
+    assert trabajador.canal_de_aviso(tmp_path) == a

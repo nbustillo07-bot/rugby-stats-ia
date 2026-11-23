@@ -70,6 +70,63 @@ def _json(respuesta: Any, etiqueta: str) -> Any:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Un pedido que falla no tira abajo todo el partido
+# ---------------------------------------------------------------------------
+
+#: Errores que sí cortan: plata, clave, cupo. Todo lo demás (una ventana con
+#: una respuesta rara, un cuadro que ffmpeg no pudo sacar) se saltea.
+_CORTAN = {"TopeDeGastoAlcanzado", "SinSaldo", "CuotaAgotada", "CupoDiarioAgotado", "Interrumpir"}
+
+
+def _corta(exc: Exception) -> bool:
+    nombres = {c.__name__ for c in type(exc).__mro__}
+    if nombres & _CORTAN:
+        return True
+    texto = str(exc)
+    return any(k in texto for k in ("API_KEY", "rechazó la clave", "no tiene permiso", "No encuentro el video"))
+
+
+class _Tolerante:
+    """Pide al modelo; si un pedido falla por algo puntual, sigue con el próximo.
+
+    Pero si fallan varios seguidos, algo anda mal de verdad (sin internet, la
+    API caída): ahí sí corta, y como todo es reanudable se sigue después.
+    """
+
+    def __init__(self, cliente: Any, que: str, maximo_seguidos: int = 3):
+        self.cliente = cliente
+        self.que = que
+        self.maximo = maximo_seguidos
+        self.seguidos = 0
+        self.salteados = 0
+
+    def pedir(self, pedido: Pedido):
+        try:
+            r = self.cliente.pedir(pedido)
+        except Exception as exc:  # noqa: BLE001 - se decide abajo
+            if _corta(exc):
+                raise
+            self.seguidos += 1
+            self.salteados += 1
+            if self.seguidos > self.maximo:
+                raise
+            log.warning("%s: salteo %s (%s)", self.que, pedido.etiqueta, exc)
+            return None
+        self.seguidos = 0
+        return r
+
+
+_TOLERANTES: dict[tuple[int, str], _Tolerante] = {}
+
+
+def _tol(cliente: Any, que: str) -> _Tolerante:
+    clave = (id(cliente), que)
+    if clave not in _TOLERANTES or _TOLERANTES[clave].cliente is not cliente:
+        _TOLERANTES[clave] = _Tolerante(cliente, que)
+    return _TOLERANTES[clave]
+
+
 def referencias_visuales(
     fichas: dict[int, Ficha],
     jugadores: list[Jugador],
@@ -233,7 +290,7 @@ def pasada_gruesa(
     for i, (ini, fin) in enumerate(ventanas_, 1):
         if progreso:
             progreso(f"Pasada gruesa {i}/{len(ventanas_)}", i / len(ventanas_))
-        r = cliente.pedir(
+        r = _tol(cliente, "pasada_gruesa").pedir(
             Pedido(
                 prompt=prompts.prompt_gruesa(
                     partido.equipo_propio, partido.equipo_rival, ini, fin
@@ -393,7 +450,7 @@ def pasada_fichas(
                 f"Fichas {i}/{len(rangos)} — faltan {len(faltantes)}",
                 i / max(1, len(rangos)),
             )
-        r = cliente.pedir(
+        r = _tol(cliente, "pasada_fichas").pedir(
             Pedido(
                 prompt=prompts.prompt_fichas(equipo, jugadores, ini, fin, faltantes),
                 video_uri=_uri(partido),
@@ -496,20 +553,23 @@ def pasada_eventos(
         if progreso:
             progreso(f"Eventos {i}/{len(rangos)}", i / max(1, len(rangos)))
         relato = _relato_de(transcripcion, ini, fin)
-        r = cliente.pedir(
+        fijo, variable = prompts.prompt_eventos(
+            partido.equipo_propio,
+            partido.equipo_rival,
+            jugadores_propios,
+            jugadores_rivales,
+            fichas,
+            ini,
+            fin,
+            relato,
+            solo_propio=cfg.solo_equipo_propio,
+            solo_tackles=solo_tackles,
+            partes=True,
+        )
+        r = _tol(cliente, "pasada_eventos").pedir(
             Pedido(
-                prompt=prompts.prompt_eventos(
-                    partido.equipo_propio,
-                    partido.equipo_rival,
-                    jugadores_propios,
-                    jugadores_rivales,
-                    fichas,
-                    ini,
-                    fin,
-                    relato,
-                    solo_propio=cfg.solo_equipo_propio,
-                    solo_tackles=solo_tackles,
-                ),
+                prompt=fijo + "\n\n" + variable,
+                prefijo=fijo,
                 video_uri=_uri(partido),
                 inicio_s=ini,
                 fin_s=fin,
@@ -755,21 +815,24 @@ def revisar_contactos(
                 zoom = {**zoom_cfg, "pista": pista}
 
         def pedir_contacto(ini_: float, fin_: float, fps_: float, nivel: str, etiqueta: str):
-            r = cliente.pedir(
+            fijo, variable = prompts.prompt_contacto(
+                partido.equipo_propio,
+                partido.equipo_rival,
+                jugadores_propios,
+                jugadores_rivales,
+                fichas,
+                ini_,
+                fin_,
+                pista_txt,
+                solo_propio=cfg.solo_equipo_propio,
+                en_cancha=en_cancha,
+                t_contacto=t,
+                partes=True,
+            )
+            r = _tol(cliente, "revisar_contactos").pedir(
                 Pedido(
-                    prompt=prompts.prompt_contacto(
-                        partido.equipo_propio,
-                        partido.equipo_rival,
-                        jugadores_propios,
-                        jugadores_rivales,
-                        fichas,
-                        ini_,
-                        fin_,
-                        pista_txt,
-                        solo_propio=cfg.solo_equipo_propio,
-                        en_cancha=en_cancha,
-                        t_contacto=t,
-                    ),
+                    prompt=fijo + "\n\n" + variable,
+                    prefijo=fijo,
                     video_uri=_uri(partido),
                     inicio_s=ini_,
                     fin_s=fin_,
@@ -862,7 +925,7 @@ def _localizar(
         vl = cfg.velocidad("localizar")
     except KeyError:
         return []
-    r = cliente.pedir(
+    r = _tol(cliente, "_localizar").pedir(
         Pedido(
             prompt=prompts.prompt_localizar(
                 partido.equipo_propio, partido.equipo_rival, t, ini, fin, pista_txt
@@ -1120,7 +1183,7 @@ def pasada_relato(
     for i, (ini, fin) in enumerate(rangos, 1):
         if progreso:
             progreso(f"Relato {i}/{len(rangos)}", i / max(1, len(rangos)))
-        r = cliente.pedir(
+        r = _tol(cliente, "pasada_relato").pedir(
             Pedido(
                 prompt=prompts.prompt_relato(
                     jugadores_propios, jugadores_rivales, ini, fin
@@ -1203,7 +1266,7 @@ def _relato_por_subtitulos(
         if progreso:
             progreso(f"Corrigiendo nombres del relato {i}/{len(tandas)}", i / len(tandas))
         try:
-            r = cliente.pedir(
+            r = _tol(cliente, "_relato_por_subtitulos").pedir(
                 Pedido(
                     prompt=prompts.prompt_relato_corregir(
                         jugadores_propios, jugadores_rivales, tanda
@@ -1266,7 +1329,7 @@ def pasada_cambios(
     for i, (ini, fin) in enumerate(rangos, 1):
         if progreso:
             progreso(f"Cambios {i}/{len(rangos)}", i / max(1, len(rangos)))
-        r = cliente.pedir(
+        r = _tol(cliente, "pasada_cambios").pedir(
             Pedido(
                 prompt=prompts.prompt_cambios(
                     partido.equipo_propio,

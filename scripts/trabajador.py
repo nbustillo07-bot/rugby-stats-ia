@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """El trabajador: la compu que hace el análisis pesado para la app web.
 
-Se queda prendido esperando. Cada pocos segundos le pregunta a la base de la
-nube si alguien apretó "Analizar" en la app; si hay un pedido, baja el video
-de YouTube, corre el análisis con Claude y va subiendo el avance. Cuando
-termina, el partido se pone en verde en la app.
+Se queda prendido esperando. Cuando alguien aprieta "Analizar" en la app, la
+app le manda un aviso por ntfy (un servicio gratis de notificaciones) y la
+compu se despierta al instante; baja el video de YouTube, corre el análisis
+con Claude y va subiendo el avance. Cuando termina, el partido se pone en
+verde en la app.
+
+Mientras no hay nada que hacer, le pregunta a la base solo cada 15 minutos
+(por si se perdió algún aviso). Así la base de Neon se puede dormir: el plan
+gratis da 100 horas de cómputo por mes, y preguntando cada pocos segundos se
+gastarían en dos semanas.
 
     python scripts/trabajador.py            # queda esperando pedidos
     python scripts/trabajador.py --una-vez  # hace lo que haya y termina
@@ -42,8 +48,18 @@ from rugby_stats.nube import Nube, Trabajo  # noqa: E402
 
 log = logging.getLogger("trabajador")
 
-ESPERA_S = 10
-LATIDO_S = 20
+#: Sin trabajo, cada cuánto se pregunta a la base (la base se duerme a los 5
+#: minutos sin consultas; con 15 minutos queda dormida dos tercios del tiempo).
+ESPERA_S = 15 * 60
+#: Después de un análisis o de un aviso, durante un rato se pregunta seguido.
+ESPERA_ACTIVA_S = 15
+VENTANA_ACTIVA_S = 20 * 60
+LATIDO_S = 60
+NTFY = "https://ntfy.sh"
+#: Cada cuánto, si no hay nada para hacer, el trabajador se reinicia para
+#: traer las actualizaciones (lo hace 7_trabajador.bat al volver a arrancar).
+REINICIO_S = 6 * 3600
+SALIDA_ACTUALIZAR = 3
 
 
 class Cancelado(pipeline.Interrumpir):
@@ -73,10 +89,74 @@ def no_dormir(activar: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+def canal_de_aviso(carpeta: Path) -> str:
+    """El canal de ntfy de esta compu: un nombre al azar, guardado en disco.
+
+    Cualquiera que sepa el nombre puede mandar un aviso, pero lo único que
+    hace un aviso es que la compu le pregunte a la base si hay trabajo.
+    """
+    import secrets
+
+    ruta = carpeta / "canal_aviso.txt"
+    try:
+        canal = ruta.read_text(encoding="utf-8").strip()
+        if canal:
+            return canal
+    except OSError:
+        pass
+    canal = "rugby-stats-" + secrets.token_urlsafe(18).replace("_", "x").replace("-", "y")
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(canal, encoding="utf-8")
+    return canal
+
+
+class Despertador(threading.Thread):
+    """Escucha el canal de ntfy y despierta al bucle cuando llega un aviso."""
+
+    def __init__(self, canal: str, base: str = NTFY):
+        super().__init__(daemon=True)
+        self.url = f"{base.rstrip('/')}/{canal}/json"
+        self.evento = threading.Event()
+        self._parar = threading.Event()
+
+    def run(self) -> None:
+        import json
+        import urllib.request
+
+        while not self._parar.is_set():
+            try:
+                with urllib.request.urlopen(self.url, timeout=120) as r:
+                    for linea in r:
+                        if self._parar.is_set():
+                            return
+                        try:
+                            d = json.loads(linea)
+                        except ValueError:
+                            continue
+                        if d.get("event") == "message":
+                            log.info("Llegó un aviso de la app.")
+                            self.evento.set()
+            except Exception as exc:  # noqa: BLE001 - sin internet: se reintenta
+                log.debug("Despertador sin conexión: %s", exc)
+                self._parar.wait(30)
+
+    def esperar(self, segundos: float) -> bool:
+        """Espera hasta ``segundos`` o hasta que llegue un aviso."""
+        llego = self.evento.wait(segundos)
+        self.evento.clear()
+        return llego
+
+    def parar(self) -> None:
+        self._parar.set()
+
+
 class Latido(threading.Thread):
-    def __init__(self, url: str | None):
+    """Mientras se analiza, avisa cada minuto que la compu sigue trabajando."""
+
+    def __init__(self, url: str | None, aviso: str = ""):
         super().__init__(daemon=True)
         self.url = url
+        self.aviso = aviso
         self.estado = "esperando pedidos"
         self._parar = threading.Event()
 
@@ -86,7 +166,7 @@ class Latido(threading.Thread):
             try:
                 if nube is None:
                     nube = Nube(self.url)
-                nube.latido(self.estado)
+                nube.latido(self.estado, self.aviso)
             except Exception as exc:  # noqa: BLE001 - sin internet un rato, se reintenta
                 log.debug("No pude mandar el latido: %s", exc)
                 if nube is not None:
@@ -326,8 +406,15 @@ def main() -> int:
     print("  Dejá esta ventana abierta. Para cortar: cerrala.")
     print("=" * 60)
 
+    canal = canal_de_aviso(RAIZ / "data")
+    despertador = None
+    if not args.una_vez:
+        despertador = Despertador(canal)
+        despertador.start()
+
     nube = None
-    latido = None
+    arranque = time.monotonic()
+    activa_hasta = time.monotonic() + VENTANA_ACTIVA_S  # al arrancar, un rato atento
     while True:
         try:
             if nube is None:
@@ -336,19 +423,31 @@ def main() -> int:
                 colgados = nube.recuperar_colgados()
                 if colgados:
                     log.info("Retomo %d análisis que habían quedado a mitad.", colgados)
-                if latido is None and not args.una_vez:
-                    latido = Latido(nube.url)
-                    latido.start()
                 log.info("Conectado. Esperando pedidos de la app…")
-            if args.una_vez:
-                nube.latido("haciendo los pedidos pendientes")
+            nube.latido("esperando pedidos", canal)
             trabajo = nube.tomar_trabajo()
             if trabajo is None:
                 if args.una_vez:
                     return 0
-                time.sleep(ESPERA_S)
+                if time.monotonic() - arranque > REINICIO_S:
+                    log.info("Me reinicio para buscar actualizaciones.")
+                    return SALIDA_ACTUALIZAR
+                activa = time.monotonic() < activa_hasta
+                if not activa:
+                    # Se cierra la conexión para que la base se pueda dormir.
+                    nube.cerrar()
+                    nube = None
+                espera = ESPERA_ACTIVA_S if activa else ESPERA_S
+                if despertador.esperar(espera):
+                    activa_hasta = time.monotonic() + VENTANA_ACTIVA_S
                 continue
-            procesar(nube, db, cfg, trabajo, latido)
+            latido = Latido(nube.url, canal)
+            latido.start()
+            try:
+                procesar(nube, db, cfg, trabajo, latido)
+            finally:
+                latido.parar()
+            activa_hasta = time.monotonic() + VENTANA_ACTIVA_S
         except KeyboardInterrupt:
             return 0
         except Exception as exc:  # noqa: BLE001 - sin internet: se reintenta

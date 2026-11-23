@@ -550,8 +550,8 @@ Estimación (a confirmar con `6_prueba_real.bat`):
 
 | | Con segunda opinión (Opus) | Sin segunda opinión |
 |---|---|---|
-| Tramo de 6 minutos | ~US$ 1 | ~US$ 0,80 |
-| Partido entero (80 min) | **~US$ 6,70** | ~US$ 4,80 |
+| Tramo de 6 minutos | ~US$ 0,90 | ~US$ 0,75 |
+| Partido entero (80 min) | **~US$ 5,80** | ~US$ 4,20 |
 
 Para sacar la segunda opinión, borrá `experto` en `claude.modelos`.
 

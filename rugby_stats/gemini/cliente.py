@@ -94,6 +94,11 @@ class Pedido:
     # "contexto_ancho"}. Con zoom, los cuadros van recortados alrededor del
     # contacto y se suman unos pocos de la vista general. Gemini lo ignora.
     zoom: dict | None = None
+    # El comienzo de ``prompt`` que es igual en muchos pedidos del partido
+    # (planteles, instrucciones). Claude lo manda primero y lo guarda en caché
+    # (se cobra al 10%); el resto del prompt va después de las imágenes. Los
+    # otros proveedores mandan el prompt entero, como siempre.
+    prefijo: str = ""
 
     def clave_cache(self, modelo: str) -> str:
         crudo = json.dumps(

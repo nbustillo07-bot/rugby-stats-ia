@@ -94,19 +94,24 @@ class Nube:
 
     def preparar(self) -> None:
         """Crea las tablas que falten (lo mismo que hace la app)."""
-        with self.cursor() as cur:
+        # Con un candado: si la app y la compu arrancan a la vez, no chocan.
+        with self.con.transaction(), self.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(727274)")
             cur.execute(ESQUEMA.read_text(encoding="utf-8"))
 
-    def latido(self, estado: str) -> None:
-        """Avisa que la compu está prendida y qué está haciendo."""
+    def latido(self, estado: str, aviso: str = "") -> None:
+        """Avisa que la compu está prendida, qué está haciendo y por dónde
+        despertarla (``aviso``: el canal de ntfy que escucha)."""
         with self.cursor() as cur:
             cur.execute(
-                """INSERT INTO compu (id, ultimo_latido, estado, version)
-                   VALUES (1, now(), %s, %s)
+                """INSERT INTO compu (id, ultimo_latido, estado, version, aviso)
+                   VALUES (1, now(), %s, %s, %s)
                    ON CONFLICT (id) DO UPDATE
                    SET ultimo_latido = now(), estado = EXCLUDED.estado,
-                       version = EXCLUDED.version""",
-                (estado[:300], VERSION),
+                       version = EXCLUDED.version,
+                       aviso = CASE WHEN EXCLUDED.aviso <> '' THEN EXCLUDED.aviso
+                                    ELSE compu.aviso END""",
+                (estado[:300], VERSION, aviso),
             )
 
     # -- trabajos -----------------------------------------------------------

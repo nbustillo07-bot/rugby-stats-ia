@@ -13,7 +13,8 @@ psycopg[binary]>=3.1         # hablar con la base de la app web (trabajador)
 #                     los subtítulos automáticos con el relato
 #   imageio-ffmpeg -> trae ffmpeg adentro: saca los cuadros que mira Claude.
 #                     Si ya tenés ffmpeg instalado, se usa ese.
-yt-dlp>=2024.1
+yt-dlp[default]>=2026.10
+deno>=2.0                    # el JavaScript que YouTube le exige a yt-dlp
 imageio-ffmpeg>=0.5
 
 # Tests

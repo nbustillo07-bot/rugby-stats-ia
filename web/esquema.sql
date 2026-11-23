@@ -125,3 +125,7 @@ CREATE INDEX IF NOT EXISTS fotos_persona_persona ON fotos_persona(persona_id);
 
 ALTER TABLE partidos ADD COLUMN IF NOT EXISTS equipo_id INTEGER REFERENCES equipos(id) ON DELETE SET NULL;
 ALTER TABLE jugadores ADD COLUMN IF NOT EXISTS persona_id INTEGER REFERENCES personas(id) ON DELETE SET NULL;
+
+-- Canal para despertar a la compu al instante cuando se pide un análisis (sin
+-- que tenga que preguntarle a la base todo el tiempo, que así se puede dormir).
+ALTER TABLE compu ADD COLUMN IF NOT EXISTS aviso TEXT NOT NULL DEFAULT '';

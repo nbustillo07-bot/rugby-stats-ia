@@ -156,6 +156,10 @@ class ClienteClaude:
         self.max_cuadros = max_cuadros
         self.max_reintentos = max_reintentos
         self.esperas = list(esperas or [5, 20, 60, 120])
+        #: Cuántas veces se espera ante "vas muy rápido" (429) o "estoy
+        #: saturado" (529). Las cuentas nuevas tienen límites por minuto
+        #: bajos: es normal chocar seguido, y no tiene que cortar el análisis.
+        self.max_reintentos_ritmo = max(self.max_reintentos, 15)
         self.max_tokens = max_tokens
         self.contadores = Contadores()
         self.al_avisar: Callable[[str], None] | None = None
@@ -308,6 +312,14 @@ class ClienteClaude:
         """Arma los bloques del mensaje y estima los tokens de entrada."""
         bloques: list[dict[str, Any]] = []
         tokens = 0
+        texto = p.prompt
+        prefijo = getattr(p, "prefijo", "") or ""
+        if prefijo and texto.startswith(prefijo) and len(texto) > len(prefijo):
+            # Lo fijo primero y marcado para la caché; lo de este pedido, al final.
+            bloques.append({"type": "text", "text": prefijo,
+                            "cache_control": {"type": "ephemeral"}})
+            tokens += len(prefijo) // 3 + 20
+            texto = texto[len(prefijo):].strip()
         referencias = [r for r in (getattr(p, "referencias", None) or []) if Path(r[1]).exists()]
         if referencias:
             bloques.append({
@@ -352,7 +364,6 @@ class ClienteClaude:
                 bloques.append({"type": "text", "text": f"t={c.t:.1f} s" + (f" · {tipo}" if tipo else "")})
                 bloques.append(_bloque_imagen(c.ruta))
                 tokens += c.tokens + 8
-        texto = p.prompt
         if p.esquema and self._sin_formato:
             texto += (
                 "\n\nRespondé únicamente con un JSON que cumpla este esquema, sin "
@@ -394,7 +405,7 @@ class ClienteClaude:
         for modelo in modelos:
             reintento_sin_algo = False
             intento = 0
-            while intento <= self.max_reintentos:
+            while intento <= max(self.max_reintentos, self.max_reintentos_ritmo):
                 bloques, tokens_est = self._contenido(p, lista)
                 self._controlar_tope(modelo, tokens_est)
                 try:
@@ -408,11 +419,13 @@ class ClienteClaude:
                     ultimo_error = exc
                     self.errores_vistos.append(f"{modelo}: {type(exc).__name__}: {str(exc)[:500]}")
                     tipo = self._clasificar(exc)
-                    if tipo == "reintentar" and intento < self.max_reintentos:
+                    ritmo = getattr(exc, "status_code", None) in (429, 529)
+                    tope = self.max_reintentos_ritmo if ritmo else self.max_reintentos
+                    if tipo == "reintentar" and intento < tope:
                         espera = self._espera(exc, intento)
                         self._avisar(
                             f"Claude está ocupado o se pasó el ritmo ({modelo}). "
-                            f"Espero {espera:.0f} s y sigo ({intento + 1}/{self.max_reintentos})."
+                            f"Espero {espera:.0f} s y sigo ({intento + 1}/{tope})."
                         )
                         self.contadores.reintentos += 1
                         if getattr(exc, "status_code", None) == 429:
@@ -543,6 +556,8 @@ class ClienteClaude:
                 return min(pedido + 1.0, 180.0)
         except (TypeError, ValueError):
             pass
+        if getattr(exc, "status_code", None) in (429, 529) and intento >= len(self.esperas):
+            return 120.0
         return self.esperas[min(intento, len(self.esperas) - 1)]
 
     def _error_claro(self, exc: Exception) -> ErrorGemini:

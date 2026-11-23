@@ -876,3 +876,67 @@ class TestAlbum:
                                             album={9: [str(foto)], 99: [str(foto)]})
         assert len(refs) == 1
         assert "4." in refs[0][0] and "9." in refs[0][0]  # el 99 no está en el plantel
+
+
+class TestAguante:
+    def test_un_pedido_que_falla_no_corta_el_partido(self, db, partido_local, tmp_path):
+        """Una ventana con un error puntual se saltea; el resto sigue."""
+        estado = {"fallados": 0}
+
+        def responder(req, cuerpo):
+            props = json.dumps(cuerpo.get("output_config", {}))
+            if '"eventos"' in props and estado["fallados"] == 0:
+                estado["fallados"] += 1
+                return error(400, "invalid_request_error", "Could not process image")
+            return servidor_por_esquema(req, cuerpo)
+
+        c, vistos = armar_cliente(tmp_path, responder)
+        res = pipeline.correr(db, c, partido_local.id, cfg_claude(tmp_path))
+        assert estado["fallados"] == 1
+        assert "eventos" in res.pasos_corridos
+        assert any(e.accion == "Tackle" for e in db.eventos(partido_local.id))
+
+    def test_si_falla_todo_seguido_si_corta(self, db, partido_local, tmp_path):
+        from rugby_stats.gemini.cliente import ErrorGemini
+
+        c, _ = armar_cliente(tmp_path, lambda req, cuerpo: error(400, "invalid_request_error", "roto"))
+        with pytest.raises(ErrorGemini):
+            pipeline.correr(db, c, partido_local.id, cfg_claude(tmp_path), pasos=["eventos"])
+
+    def test_sin_saldo_corta_enseguida(self, db, partido_local, tmp_path):
+        c, vistos = armar_cliente(
+            tmp_path, lambda req, cuerpo: error(400, "invalid_request_error",
+                                                "Your credit balance is too low"))
+        with pytest.raises(SinSaldo):
+            pipeline.correr(db, c, partido_local.id, cfg_claude(tmp_path), pasos=["eventos"])
+        assert len(vistos) == 1
+
+    def test_una_cuenta_nueva_con_limites_bajos_espera_y_sigue(self, tmp_path, monkeypatch):
+        """Muchos 429 seguidos (límite por minuto) no cortan: espera lo que pide."""
+        respuestas = iter([error(429, "rate_limit_error", "rate", {"retry-after": "7"})] * 9
+                          + [respuesta({"ok": True})])
+        dormidas: list[float] = []
+        monkeypatch.setattr("rugby_stats.proveedor_claude.time.sleep", dormidas.append)
+        c, vistos = armar_cliente(tmp_path, lambda req, cuerpo: next(respuestas))
+        assert c.pedir(Pedido(prompt="x", esquema={"type": "object"})).json() == {"ok": True}
+        assert len(vistos) == 10 and all(d == 8.0 for d in dormidas)
+
+
+class TestCacheDelTexto:
+    def test_lo_fijo_va_primero_y_en_cache(self, video, tmp_path):
+        c, vistos = armar_cliente(tmp_path, servidor_por_esquema)
+        c.pedir(Pedido(prompt="FIJO largo\n\nESTE CONTACTO: t=10", prefijo="FIJO largo",
+                       video_uri=str(video), inicio_s=10, fin_s=11, fps=2, ancho=320))
+        bloques = vistos[0]["messages"][0]["content"]
+        assert bloques[0] == {"type": "text", "text": "FIJO largo", "cache_control": {"type": "ephemeral"}}
+        assert bloques[-1]["text"] == "ESTE CONTACTO: t=10"
+
+    def test_los_contactos_del_partido_comparten_el_mismo_texto_fijo(self, db, partido_local, tmp_path):
+        cfg = cfg_tackles(tmp_path, experto=False)
+        c, vistos = cliente_tackles(tmp_path, servidor_tackles(fuerte_conf=0.95))
+        pipeline.correr(db, c, partido_local.id, cfg)
+        fijos = [v["messages"][0]["content"][0] for v in vistos
+                 if "tackleadores" in json.dumps(v.get("output_config", {}))]
+        assert len(fijos) >= 2
+        assert all(f.get("cache_control") for f in fijos)
+        assert len({f["text"] for f in fijos}) == 1

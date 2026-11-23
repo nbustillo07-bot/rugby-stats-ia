@@ -70,7 +70,7 @@ export default function FormNuevo({
           </div>
         </div>
         <div className="ayuda">
-          Para probar conviene un tramo de 5 a 10 minutos (~US$ 1). El partido entero sale ~US$ 6,70 (estimado).
+          Para probar conviene un tramo de 5 a 10 minutos (~US$ 1). El partido entero sale ~US$ 5,80 (estimado).
         </div>
         <label htmlFor="nombre">Nombre del partido (opcional)</label>
         <input id="nombre" name="nombre" defaultValue={v.nombre} placeholder="Fecha 8 vs San Isidro" />

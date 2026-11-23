@@ -52,10 +52,30 @@ def _cmd_ytdlp() -> list[str] | None:
     ejecutable yt-dlp no está en el PATH aunque esté instalado.
     """
     if importlib.util.find_spec("yt_dlp") is not None:
-        return [sys.executable, "-m", "yt_dlp"]
-    if shutil.which("yt-dlp"):
-        return ["yt-dlp"]
-    return None
+        base = [sys.executable, "-m", "yt_dlp"]
+    elif shutil.which("yt-dlp"):
+        base = ["yt-dlp"]
+    else:
+        return None
+    # YouTube ahora exige un intérprete de JavaScript para sacar los formatos;
+    # sin él, yt-dlp avisa que "faltan formatos" y a veces no baja nada. El
+    # paquete "deno" de pip trae uno y acá se le dice dónde está.
+    deno = _deno()
+    if deno:
+        base += ["--js-runtimes", f"deno:{deno}"]
+    return base
+
+
+def _deno() -> str | None:
+    try:
+        import deno as _paquete_deno  # type: ignore[import-not-found]
+
+        ruta = _paquete_deno.find_deno_bin()
+        if ruta and Path(ruta).exists():
+            return str(ruta)
+    except Exception:  # noqa: BLE001 - sin el paquete, se busca en el sistema
+        pass
+    return shutil.which("deno")
 
 
 def hay_ytdlp() -> bool:

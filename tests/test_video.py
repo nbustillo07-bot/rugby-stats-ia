@@ -169,8 +169,15 @@ class TestYtDlp:
 
         monkeypatch.setattr(v.importlib.util, "find_spec", lambda n: object())
         monkeypatch.setattr(v.shutil, "which", lambda n: None)
+        monkeypatch.setattr(v, "_deno", lambda: None)
         assert v._cmd_ytdlp() == [sys.executable, "-m", "yt_dlp"]
         assert v.hay_ytdlp()
+
+    def test_le_pasa_deno_a_yt_dlp_si_esta(self, monkeypatch):
+        """YouTube exige JavaScript: si está deno, se lo indica."""
+        monkeypatch.setattr(v.importlib.util, "find_spec", lambda n: object())
+        monkeypatch.setattr(v, "_deno", lambda: r"C:\venv\Scripts\deno.exe")
+        assert v._cmd_ytdlp()[-2:] == ["--js-runtimes", r"deno:C:\venv\Scripts\deno.exe"]
 
     def test_si_no_esta_instalado_no_se_inventa(self, monkeypatch):
         monkeypatch.setattr(v.importlib.util, "find_spec", lambda n: None)
