@@ -61,6 +61,13 @@ tabla, no un relato.
 
 ---
 
+## Cuando tengas la clave de Claude
+
+Está todo en [`PASOS_CON_LA_CLAVE.txt`](PASOS_CON_LA_CLAVE.txt): la clave
+en la compu (`2_poner_clave.bat`), verificarla (`3_verificar.bat`), la misma
+clave en Vercel para leer la foto de la formación, y la primera prueba con un
+tramo de 5 a 10 minutos.
+
 ## La app web (Vercel) y la compu como trabajador
 
 Además de la interfaz local, hay una app web en `web/` para usar desde el
@@ -78,10 +85,18 @@ teléfono o cualquier compu, con un link y contraseña:
 servidores en la nube (se probó desde GitHub: pide iniciar sesión). Desde
 una conexión de casa baja normal.
 
-La app y la compu se hablan por una base Postgres en la nube (la de Vercel →
-Storage). La compu nunca recibe conexiones: pregunta cada 10 segundos si hay
-algo para hacer. Mientras analiza no se duerme, y si se apaga a mitad, al
-volver sigue donde quedó.
+La app y la compu se hablan por una base Postgres en la nube (Neon, desde
+Vercel → Storage). La compu nunca recibe conexiones: cuando se aprieta
+**Analizar**, la app le manda un aviso por [ntfy](https://ntfy.sh) y se
+despierta al instante; sin trabajo, igual le pregunta a la base cada 15
+minutos por si se perdió un aviso. No pregunta más seguido a propósito: la
+base gratis de Neon da 100 horas de cómputo por mes y se duerme a los 5
+minutos sin consultas; preguntando cada pocos segundos no se dormiría nunca
+y las horas se acabarían en dos semanas.
+
+Mientras analiza no se duerme, y si se apaga a mitad, al volver sigue donde
+quedó. Se actualiza sola desde GitHub cada vez que arranca (y cada 6 horas
+sin trabajo), y si se abre dos veces, la segunda ventana se cierra sola.
 
 **Variables:** en Vercel, `DATABASE_URL` (la pone sola la base) y
 `APP_PASSWORD` (la contraseña de la app). En el `.env` de la compu,

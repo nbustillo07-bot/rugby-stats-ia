@@ -13,17 +13,28 @@ RAIZ = Path(__file__).resolve().parent.parent
 CONFIG_POR_DEFECTO = RAIZ / "config.yaml"
 
 
-def _cargar_env(ruta: Path) -> None:
-    """Lee un .env sencillo sin depender de python-dotenv."""
+def _cargar_env(ruta: Path, pisar: bool = False) -> None:
+    """Lee un .env sencillo sin depender de python-dotenv.
+
+    ``pisar``: si el archivo tiene un valor, reemplaza al que ya estaba (lo
+    usa el trabajador antes de cada análisis, para tomar una clave pegada
+    después de abrirlo sin tener que reiniciarlo).
+    """
     if not ruta.exists():
         return
-    for linea in ruta.read_text(encoding="utf-8").splitlines():
+    # utf-8-sig: algunos editores guardan una marca invisible al principio.
+    for linea in ruta.read_text(encoding="utf-8-sig").splitlines():
         linea = linea.strip()
+        if linea.startswith("export "):
+            linea = linea[len("export "):].strip()
         if not linea or linea.startswith("#") or "=" not in linea:
             continue
         clave, valor = linea.split("=", 1)
-        clave, valor = clave.strip(), valor.strip().strip("'\"")
-        os.environ.setdefault(clave, valor)
+        clave, valor = clave.strip(), valor.strip().strip("'\"").strip()
+        if pisar and valor:
+            os.environ[clave] = valor
+        else:
+            os.environ.setdefault(clave, valor)
 
 
 @dataclass

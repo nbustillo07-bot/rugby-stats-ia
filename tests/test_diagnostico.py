@@ -271,3 +271,22 @@ def test_el_informe_se_guarda_despues_de_cada_paso(entorno, monkeypatch):
     assert vistos[0] == 0      # antes del primer pedido no hay nada
     assert vistos[1] == 1      # al segundo ya está guardado el primero
     assert max(vistos) == 1    # siempre el mismo archivo, no uno por paso
+
+
+def test_el_env_con_marca_invisible_y_export(tmp_path, monkeypatch):
+    """Notepad a veces guarda una marca al principio; y hay quien escribe export."""
+    from rugby_stats import config
+
+    monkeypatch.delenv("CLAVE_DE_PRUEBA_A", raising=False)
+    monkeypatch.delenv("CLAVE_DE_PRUEBA_B", raising=False)
+    env = tmp_path / ".env"
+    env.write_bytes("﻿CLAVE_DE_PRUEBA_A= abc \nexport CLAVE_DE_PRUEBA_B=\"xyz\"\n".encode("utf-8"))
+    config._cargar_env(env)
+    import os
+
+    assert os.environ["CLAVE_DE_PRUEBA_A"] == "abc"
+    assert os.environ["CLAVE_DE_PRUEBA_B"] == "xyz"
+    env.write_text("CLAVE_DE_PRUEBA_A=nueva\nCLAVE_DE_PRUEBA_B=\n", encoding="utf-8")
+    config._cargar_env(env, pisar=True)
+    assert os.environ["CLAVE_DE_PRUEBA_A"] == "nueva"
+    assert os.environ["CLAVE_DE_PRUEBA_B"] == "xyz"  # vacío no pisa

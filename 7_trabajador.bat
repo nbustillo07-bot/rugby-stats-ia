@@ -20,6 +20,8 @@ rem yt-dlp se actualiza seguido porque YouTube cambia seguido.
 ".venv\Scripts\python.exe" scripts\trabajador.py
 rem 3 = se reinicia solo para actualizarse (cada tantas horas sin trabajo).
 if %errorlevel%==3 goto otra_vez
+rem 4 = ya habia otro trabajador abierto: esta ventana no hace falta.
+if %errorlevel%==4 exit /b 0
 echo.
 echo El trabajador se corto. Vuelve a arrancar en 30 segundos (cerra la ventana para frenarlo).
 timeout /t 30 >nul

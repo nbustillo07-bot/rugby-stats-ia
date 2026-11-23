@@ -1,0 +1,42 @@
+RUGBY STATS - PASOS PARA CUANDO TENGAS LA CLAVE DE CLAUDE
+==========================================================
+
+0. Reiniciá la compu (o cerrá la ventana negra del trabajador y abrí
+   7_trabajador.bat). Así arranca la versión nueva: se actualiza sola
+   desde GitHub, instala lo que falte (la primera vez baja unos 100 MB)
+   y queda esperando. De ahí en más se actualiza sola.
+
+1. Sacá la clave en https://platform.claude.com/settings/keys
+   - "Create Key", nombre: rugby-stats. Empieza con sk-ant-...
+   - Cargá saldo en Billing (con US$ 10 alcanza para empezar).
+   - Recomendado: ponele un límite de gasto mensual a la cuenta.
+   La clave es como una tarjeta: no la mandes por chat ni la subas a ningún lado.
+
+2. En la compu: doble clic en 2_poner_clave.bat, pegá la clave después
+   de ANTHROPIC_API_KEY= , Ctrl+S y cerrá. (No hace falta reiniciar el
+   trabajador: la lee antes de cada análisis.)
+
+3. Doble clic en 3_verificar.bat -> tiene que decir que Claude contestó.
+
+4. En Vercel (para leer la foto de la formación):
+   proyecto "web" -> Settings -> Environment Variables -> Add
+   Key: ANTHROPIC_API_KEY   Value: la misma clave   -> Save
+   Después: Deployments -> en el último, los tres puntitos -> Redeploy.
+
+5. Primera prueba, en la app (https://web-six-indol-36.vercel.app):
+   - Club -> Crear club "Los Molinos" (ya vienen los 5 equipos escritos).
+   - Nuevo partido -> equipo "Los Molinos · Primera", link de YouTube,
+     un tramo de 5 a 10 minutos (sale ~US$ 1), plantel (o la foto de la
+     formación) -> Analizar.
+   - La compu arranca sola en unos segundos. Cuando termina, se pone verde.
+   - Revisá los tackles con un clic. Abajo dice cuántos acertó la IA.
+
+   Otra opción para medir el costo real sin tocar nada: 6_prueba_real.bat
+   (2 minutos del partido de Lanús que ya está cargado en la compu).
+
+Si algo falla, el error aparece en la app, en el partido. Y en la compu
+queda todo anotado en data\trabajador.log.
+
+Si va lento: las cuentas nuevas de Claude tienen un límite de pedidos por
+minuto bajo; el programa espera solo y sigue. Cargando más saldo, Anthropic
+sube ese límite.

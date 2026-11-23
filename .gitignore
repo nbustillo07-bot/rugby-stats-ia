@@ -6,6 +6,7 @@ data/*.db
 data/cupos.json
 data/trabajador.log
 data/canal_aviso.txt
+data/trabajador.lock
 data/album/
 data/partidos.db-journal
 data/cache/

@@ -1,5 +1,5 @@
 # Núcleo
-anthropic>=2.0               # SDK de Claude (el proveedor por defecto)
+anthropic>=2.12             # SDK de Claude (el proveedor por defecto)
 google-genai>=3.0,<4          # SDK de Gemini (opcional: proveedor: gemini)
 streamlit>=1.49              # la interfaz (hace falta >=1.49 por el parámetro width)
 openpyxl>=3.1                # el Excel con fórmulas

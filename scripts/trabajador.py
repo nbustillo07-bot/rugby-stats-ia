@@ -39,6 +39,7 @@ for _flujo in (sys.stdout, sys.stderr):
 
 from rugby_stats import costos, revision  # noqa: E402
 from rugby_stats.analisis import pipeline  # noqa: E402
+from rugby_stats import config as config_mod  # noqa: E402
 from rugby_stats.config import Config, cargar_config  # noqa: E402
 from rugby_stats.db import BaseDatos, ruta_por_defecto  # noqa: E402
 from rugby_stats.gemini import video as video_mod  # noqa: E402
@@ -64,6 +65,50 @@ SALIDA_ACTUALIZAR = 3
 
 class Cancelado(pipeline.Interrumpir):
     pass
+
+
+# ---------------------------------------------------------------------------
+# Uno solo a la vez (por si se abre dos veces: con Windows y a mano)
+# ---------------------------------------------------------------------------
+
+SALIDA_YA_HAY_OTRO = 4
+_candado = None
+
+
+def tomar_candado(carpeta: Path) -> bool:
+    """True si este es el único trabajador abierto en esta compu."""
+    global _candado
+    carpeta.mkdir(parents=True, exist_ok=True)
+    archivo = open(carpeta / "trabajador.lock", "a+")  # noqa: SIM115 - queda abierto a propósito
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            archivo.seek(0)
+            msvcrt.locking(archivo.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(archivo.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        archivo.close()
+        return False
+    _candado = archivo
+    return True
+
+
+def version_actual() -> str:
+    """El commit de git que está corriendo, para verlo desde la app."""
+    import subprocess
+
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=RAIZ,
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:  # noqa: BLE001 - sin git, se sigue igual
+        pass
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -398,8 +443,16 @@ def main() -> int:
         handlers=[logging.StreamHandler(sys.stdout),
                   logging.FileHandler(carpeta_log / "trabajador.log", encoding="utf-8")],
     )
+    if not tomar_candado(RAIZ / "data"):
+        print("Ya hay un trabajador abierto en esta compu. Esta ventana se cierra.")
+        return SALIDA_YA_HAY_OTRO
     cfg = cargar_config(args.config)
     db = BaseDatos(ruta_por_defecto())
+    import rugby_stats.nube as nube_mod
+
+    version = version_actual()
+    if version:
+        nube_mod.VERSION = version
 
     print("=" * 60)
     print("  rugby-stats-ia — trabajador de la app")
@@ -441,6 +494,13 @@ def main() -> int:
                 if despertador.esperar(espera):
                     activa_hasta = time.monotonic() + VENTANA_ACTIVA_S
                 continue
+            # Por si se pegó la clave o se cambió la configuración con el
+            # trabajador ya abierto: se vuelven a leer antes de cada análisis.
+            config_mod._cargar_env(RAIZ / ".env", pisar=True)
+            try:
+                cfg = cargar_config(args.config)
+            except Exception as exc:  # noqa: BLE001 - se sigue con la que había
+                log.warning("No pude releer config.yaml (%s): sigo con la anterior.", exc)
             latido = Latido(nube.url, canal)
             latido.start()
             try:

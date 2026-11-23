@@ -225,3 +225,16 @@ def test_el_canal_de_aviso_es_siempre_el_mismo(tmp_path):
     a = trabajador.canal_de_aviso(tmp_path)
     assert a.startswith("rugby-stats-") and len(a) > 25
     assert trabajador.canal_de_aviso(tmp_path) == a
+
+
+def test_un_solo_trabajador_a_la_vez(tmp_path):
+    import subprocess
+    import sys
+
+    assert trabajador.tomar_candado(tmp_path)
+    codigo = (
+        "import sys; sys.path.insert(0, %r); from scripts import trabajador; "
+        "from pathlib import Path; print(trabajador.tomar_candado(Path(%r)))"
+    ) % (str(trabajador.RAIZ), str(tmp_path))
+    r = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True)
+    assert r.stdout.strip() == "False"
