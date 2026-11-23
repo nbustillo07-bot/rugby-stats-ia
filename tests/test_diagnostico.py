@@ -88,6 +88,9 @@ def entorno(tmp_path, monkeypatch):
         "    liviano: 8\n", "    liviano: 1000000\n"
     )
     assert "1000000" in texto, "cambió el formato de config.yaml"
+    # Estos tests son del camino de Gemini.
+    texto = texto.replace("proveedor: claude", "proveedor: gemini")
+    assert "proveedor: gemini" in texto
     (tmp_path / "config.yaml").write_text(texto, encoding="utf-8")
     monkeypatch.setattr("time.sleep", lambda s: None)
     (tmp_path / ".env").write_text(f"GEMINI_API_KEY={CLAVE}\n", encoding="utf-8")

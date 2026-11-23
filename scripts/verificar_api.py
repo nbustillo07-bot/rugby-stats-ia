@@ -33,7 +33,7 @@ from rugby_stats.gemini import video as video_mod  # noqa: E402
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Verifica la API de Gemini.")
+    ap = argparse.ArgumentParser(description="Verifica la clave y el modelo.")
     ap.add_argument("--video", help="URL de YouTube o ruta de archivo para probar.")
     ap.add_argument(
         "--desde", type=float, default=0.0, help="Segundo de inicio de la prueba."
@@ -47,6 +47,7 @@ def main() -> int:
     cfg = cargar_config(args.config)
 
     print("Configuración")
+    print(f"  proveedor        : {cfg.proveedor}")
     niveles = cfg.niveles or {"fuerte": [cfg.modelo] + cfg.modelos_alternativos}
     for nivel, modelos in niveles.items():
         print(f"  modelos {nivel:8}: {', '.join(modelos)}")
@@ -55,9 +56,8 @@ def main() -> int:
     print()
 
     if not cfg.hay_api_key:
-        print("✗ No hay GEMINI_API_KEY.")
-        print("  Sacá una gratis en https://aistudio.google.com/apikey")
-        print("  Después: copiá .env.example a .env y pegala ahí.")
+        print(f"✗ No hay {cfg.nombre_variable_clave} en el archivo .env.")
+        print("  Hacé doble clic en 2_poner_clave.bat y pegala ahí.")
         return 1
     print("✓ Hay clave cargada.")
 
@@ -74,6 +74,15 @@ def main() -> int:
         print(f"✗ La API no contestó: {exc}")
         return 1
     print(f"✓ Contestó el modelo {info['modelo']}: {info['respuesta']}")
+    if info.get("costo_usd"):
+        print(f"  (costó US$ {info['costo_usd']:.5f})")
+
+    if cfg.proveedor == "claude":
+        if not args.video:
+            print("\nListo: la clave anda. Para probar con video y medir cuánto "
+                  "cuesta, usá 6_prueba_real.bat.")
+            return 0
+        return _probar_video_claude(cfg, cliente, args)
 
     if not args.video:
         print("\nListo. Para probar la parte de video, agregá --video.")
@@ -151,6 +160,63 @@ def main() -> int:
                 f"{cfg.descargar_si_dura_mas_de_s / 60:.0f} min y hay yt-dlp)."
             )
     print("\nListo: la API anda y puede mirar video.")
+    return 0
+
+
+def _probar_video_claude(cfg, cliente, args) -> int:
+    """Baja unos segundos del video, saca cuadros y le pregunta a Claude."""
+    from rugby_stats.gemini.cliente import Pedido
+
+    print(f"\nProbando video: {args.video}")
+    try:
+        fuente = video_mod.detectar_fuente(args.video)
+        desde = args.desde or 600.0
+        hasta = desde + max(10.0, args.largo)
+        print(f"  bajando del segundo {desde:.0f} al {hasta:.0f}…")
+        fuente = video_mod.preparar(
+            fuente, cliente, cfg.dir_video, 0, desde_s=desde, hasta_s=hasta,
+            calidad=cfg.calidad_descarga,
+        )
+    except video_mod.ErrorVideo as exc:
+        print(f"✗ No pude preparar el video: {exc}")
+        return 1
+    try:
+        r = cliente.pedir(
+            Pedido(
+                prompt=(
+                    "Mirá estos cuadros de un partido de rugby y respondé con el "
+                    'JSON: hay_rugby, cuantos_jugadores_se_ven, '
+                    "se_leen_numeros_de_camiseta, hay_marcador_en_pantalla, "
+                    "que_pasa (una frase corta)."
+                ),
+                video_uri=fuente.uri_subida,
+                inicio_s=desde,
+                fin_s=hasta,
+                fps=1.0,
+                ancho=768,
+                esquema={
+                    "type": "object",
+                    "properties": {
+                        "hay_rugby": {"type": "boolean"},
+                        "cuantos_jugadores_se_ven": {"type": "integer"},
+                        "se_leen_numeros_de_camiseta": {"type": "boolean"},
+                        "hay_marcador_en_pantalla": {"type": "boolean"},
+                        "que_pasa": {"type": "string"},
+                    },
+                    "required": ["hay_rugby", "que_pasa"],
+                },
+                etiqueta="verificación de video",
+                nivel="liviano",
+            )
+        )
+    except ErrorGemini as exc:
+        print(f"✗ Falló el pedido de video: {exc}")
+        return 1
+    print("✓ Claude miró los cuadros y contestó:")
+    for k, v in (r.json() or {}).items():
+        print(f"    {k}: {v}")
+    print(f"  tokens de entrada: {r.tokens_entrada:,} · costó US$ {getattr(r, 'costo_usd', 0):.4f}")
+    print("\nListo: la clave anda y Claude puede mirar el video.")
     return 0
 
 

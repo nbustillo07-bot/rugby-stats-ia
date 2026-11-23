@@ -318,6 +318,7 @@ class TestRepartoDelTrabajo:
         from rugby_stats.config import cargar_config
 
         cfg = cargar_config(Path(__file__).resolve().parent.parent / "config.yaml")
+        cfg._d["proveedor"] = "gemini"
         assert cfg.niveles["fuerte"][0] == "gemini-3.8-flash"
         assert all("lite" in m for m in cfg.niveles["liviano"])
         # Lo que es volumen, a los livianos (500 por día cada uno).

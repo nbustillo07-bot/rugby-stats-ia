@@ -35,6 +35,9 @@ class Velocidad:
     ventana_s: float = 120.0
     margen_antes_s: float = 0.0
     margen_despues_s: float = 0.0
+    # Ancho en píxeles de cada cuadro, para los proveedores que reciben
+    # imágenes sueltas (Claude). 0 = lo decide el proveedor.
+    ancho: int = 0
 
 
 class Config:
@@ -69,7 +72,12 @@ class Config:
 
     @property
     def niveles(self) -> dict[str, list[str]] | None:
-        """nivel -> modelos en orden, o None si la config es de la forma vieja."""
+        """nivel -> modelos en orden, o None si la config es de la forma vieja.
+
+        Son los modelos del proveedor elegido.
+        """
+        if self.proveedor == "claude":
+            return self.niveles_claude
         m = self.get("modelos")
         if not isinstance(m, dict):
             return None
@@ -146,18 +154,25 @@ class Config:
         return self.dir_cache.parent / "cupos.json"
 
     def velocidad(self, nombre: str) -> Velocidad:
-        d = self.get(f"velocidades.{nombre}") or {}
+        d = dict(self.get(f"velocidades.{nombre}") or {})
         if not d:
             raise KeyError(
                 f"No hay una velocidad '{nombre}' en config.yaml. "
                 f"Definidas: {sorted((self.get('velocidades') or {}).keys())}"
             )
+        # Cada proveedor puede ajustar las velocidades: Claude recibe cuadros
+        # sueltos y conviene mandarle menos y más chicos que el video entero
+        # que recibe Gemini.
+        propio = self.get(f"{self.proveedor}.velocidades.{nombre}") or {}
+        if isinstance(propio, dict):
+            d.update(propio)
         return Velocidad(
             fps=float(d["fps"]),
             resolucion=d.get("resolucion", "MEDIA_RESOLUTION_LOW"),
             ventana_s=float(d.get("ventana_s", 120)),
             margen_antes_s=float(d.get("margen_antes_s", 0)),
             margen_despues_s=float(d.get("margen_despues_s", 0)),
+            ancho=int(d.get("ancho", 0) or 0),
         )
 
     @property
@@ -238,11 +253,72 @@ class Config:
 
     @property
     def api_key(self) -> str | None:
+        """La clave del proveedor elegido."""
+        if self.proveedor == "claude":
+            return self.clave_anthropic
+        return self.clave_gemini
+
+    @property
+    def clave_gemini(self) -> str | None:
         return os.environ.get("GEMINI_API_KEY") or None
+
+    @property
+    def clave_anthropic(self) -> str | None:
+        return os.environ.get("ANTHROPIC_API_KEY") or None
 
     @property
     def hay_api_key(self) -> bool:
         return bool(self.api_key)
+
+    # -- proveedor ---------------------------------------------------------
+
+    @property
+    def proveedor(self) -> str:
+        """Quién mira el video: "claude" o "gemini"."""
+        p = str(self.get("proveedor", "gemini") or "gemini").strip().lower()
+        return p if p in ("claude", "gemini") else "gemini"
+
+    @property
+    def nombre_variable_clave(self) -> str:
+        return "ANTHROPIC_API_KEY" if self.proveedor == "claude" else "GEMINI_API_KEY"
+
+    @property
+    def niveles_claude(self) -> dict[str, list[str]]:
+        m = self.get("claude.modelos") or {}
+        niveles = {
+            n: [str(x) for x in (m.get(n) or [])] for n in ("fuerte", "liviano")
+        } if isinstance(m, dict) else {}
+        niveles = {k: v for k, v in niveles.items() if v}
+        niveles.setdefault("fuerte", ["claude-sonnet-5-5"])
+        niveles.setdefault("liviano", niveles["fuerte"])
+        return niveles
+
+    @property
+    def precios_claude(self) -> dict[str, dict[str, float]]:
+        """Dólares por millón de tokens, por modelo."""
+        d = self.get("claude.precios") or {}
+        salida: dict[str, dict[str, float]] = {}
+        for modelo, p in (d.items() if isinstance(d, dict) else []):
+            if isinstance(p, dict):
+                salida[str(modelo)] = {k: float(v) for k, v in p.items()}
+        return salida
+
+    @property
+    def esfuerzo_claude(self) -> str:
+        e = str(self.get("claude.esfuerzo", "low") or "low")
+        return e if e in ("low", "medium", "high", "xhigh", "max") else "low"
+
+    @property
+    def tope_usd_por_partido(self) -> float:
+        return float(self.get("claude.tope_usd_por_partido", 10) or 0)
+
+    @property
+    def max_cuadros_por_pedido(self) -> int:
+        return int(self.get("claude.max_cuadros_por_pedido", 80) or 80)
+
+    @property
+    def calidad_descarga(self) -> int:
+        return int(self.get("video.calidad_descarga", 720) or 720)
 
 
 def cargar_config(ruta: str | Path | None = None) -> Config:

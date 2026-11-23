@@ -174,6 +174,10 @@ class Ficha:
     nota: str = ""
     id: int | None = None
     partido_id: int | None = None
+    # Recorte del jugador en el cuadro donde se le leyó el número. Es la
+    # "ficha visual": se le muestra al modelo para comparar imagen contra
+    # imagen, que es lo que mejor funcionó para identificar.
+    imagen: str = ""
 
     def descripcion(self) -> str:
         """La ficha en una línea, para meterla en un prompt."""
@@ -205,6 +209,10 @@ class FuenteVideo:
     # Cuándo se subió a la Files API (ISO, UTC). Los archivos subidos se
     # borran solos a las 48 horas, así que hay que saber cuándo renovarlos.
     subido_en: str | None = None
+    # Si se bajó solo un pedazo del video: qué segundos del partido cubre el
+    # archivo. None = el archivo es el video entero.
+    recorte_desde_s: float | None = None
+    recorte_hasta_s: float | None = None
     # Desfase entre el reloj del marcador en pantalla y el tiempo del video.
     # reloj_partido = t_video + desfase_s
     desfase_s: float = 0.0

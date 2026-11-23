@@ -190,7 +190,7 @@ class TestYtDlp:
             return Res()
 
         monkeypatch.setattr(v, "_cmd_ytdlp", lambda: ["yt-dlp"])
-        monkeypatch.setattr(v, "hay_ffmpeg", lambda: False)
+        monkeypatch.setattr(v, "ffmpeg_exe", lambda: None)
         monkeypatch.setattr(v.subprocess, "run", correr)
         ruta = v.descargar(URL, tmp_path)
         formato = vistos[0][vistos[0].index("-f") + 1]

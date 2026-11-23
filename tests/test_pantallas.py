@@ -81,3 +81,38 @@ def test_ninguna_pantalla_usa_parametros_deprecados():
             f"{pantalla} usa use_container_width, que está deprecado. "
             'Cambialo por width="stretch" o width="content".'
         )
+
+
+@pytest.mark.parametrize("pantalla", ["app.py", "pages/3_Fichas.py", "pages/4_Analisis.py"])
+def test_con_clave_de_claude_muestra_la_plata(pantalla, tmp_path, monkeypatch):
+    """Con clave de Claude: la barra muestra lo gastado y Análisis el costo."""
+    from streamlit.testing.v1 import AppTest
+
+    from rugby_stats.db import BaseDatos
+    from rugby_stats.modelos import Equipo, FuenteVideo, Partido
+    from tests.conftest import hacer_plantel
+
+    ruta_db = tmp_path / "plata.db"
+    base = BaseDatos(ruta_db)
+    pid = base.guardar_partido(Partido(
+        nombre="A vs B",
+        equipo_propio=Equipo(nombre="Club A", kit="rayas", numero_legible="baja"),
+        equipo_rival=Equipo(nombre="Club B", kit="liso"),
+        video=FuenteVideo(tipo="youtube", referencia="https://youtu.be/aaaaaaaaaaa",
+                          duracion_s=4800.0),
+        analizar_desde_s=600.0, analizar_hasta_s=960.0,
+    ))
+    base.guardar_plantel(pid, hacer_plantel("Club A"))
+    base.registrar_gasto(pid, 1.25, "claude")
+    base.cerrar()
+    monkeypatch.setenv("RUGBY_STATS_DB", str(ruta_db))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-de-mentira")
+    monkeypatch.chdir(RAIZ)
+    at = AppTest.from_file(str(RAIZ / pantalla), default_timeout=90)
+    at.session_state["partido_id"] = 1
+    at.session_state["forzar_simulado"] = False
+    at.run()
+    assert not at.exception, at.exception[0].message if at.exception else ""
+    if pantalla.endswith("4_Analisis.py"):
+        assert any("US$" in str(m.value) for m in at.metric)
+        assert any(m.value == "US$ 1.25" for m in at.metric)

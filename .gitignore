@@ -7,6 +7,8 @@ data/cupos.json
 data/partidos.db-journal
 data/cache/
 data/video/
+data/cuadros/
+data/fichas/
 salidas/
 
 # Python

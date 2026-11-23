@@ -51,6 +51,8 @@ class Resultado:
     simulado: bool = False
     aviso: str = ""
     contadores: Any = None
+    gasto_usd: float = 0.0          # lo que costó esta corrida
+    gasto_total_usd: float = 0.0    # lo que lleva gastado el partido
 
     def resumen(self) -> str:
         partes = [
@@ -58,12 +60,53 @@ class Resultado:
             f"{self.fichas_nuevas} fichas",
             f"{self.tramos} tramos",
         ]
+        if self.gasto_usd:
+            partes.append(
+                f"costó US$ {self.gasto_usd:.2f} (el partido lleva US$ {self.gasto_total_usd:.2f})"
+            )
         if self.simulado:
             partes.append("MODO SIMULADO: estos datos no miden nada")
         return " · ".join(partes)
 
 
 def correr(
+    db: BaseDatos,
+    cliente: Any,
+    partido_id: int,
+    cfg: Config,
+    pasos: list[str] | None = None,
+    forzar: bool = False,
+    progreso: Callable[[str, float], None] | None = None,
+) -> Resultado:
+    """Corre el análisis y lleva la cuenta de la plata.
+
+    Antes de arrancar le dice al cliente cuánto se gastó ya en este partido
+    (para que respete el tope), y al terminar —aunque sea por un error o por
+    el tope— registra lo que se gastó en esta corrida.
+    """
+    previo = db.gasto_partido(partido_id)
+    empezar = getattr(cliente, "empezar_partido", None)
+    if empezar is not None:
+        empezar(previo, cfg.tope_usd_por_partido)
+    gasto = 0.0
+    try:
+        res = _correr(db, cliente, partido_id, cfg, pasos, forzar, progreso)
+    finally:
+        gasto = float(getattr(cliente, "gasto_usd", 0.0) or 0.0)
+        if gasto > 0:
+            resumen = getattr(cliente, "resumen_gasto", None)
+            db.registrar_gasto(
+                partido_id, gasto, cfg.proveedor, resumen() if resumen else {}
+            )
+            # Para que si el mismo cliente se usa otra vez no se cuente doble.
+            if empezar is not None:
+                empezar(previo + gasto, cfg.tope_usd_por_partido)
+    res.gasto_usd = gasto
+    res.gasto_total_usd = previo + gasto
+    return res
+
+
+def _correr(
     db: BaseDatos,
     cliente: Any,
     partido_id: int,
@@ -101,7 +144,10 @@ def correr(
     # Dejar el video listo (bajarlo y/o subirlo si hace falta).
     _avisar(progreso, "Preparando el video", 0.0)
     partido.video = video_mod.preparar(
-        partido.video, cliente, cfg.dir_video, cfg.descargar_si_dura_mas_de_s
+        partido.video, cliente, cfg.dir_video, cfg.descargar_si_dura_mas_de_s,
+        desde_s=partido.analizar_desde_s if partido.analizar_hasta_s else None,
+        hasta_s=partido.analizar_hasta_s,
+        calidad=cfg.calidad_descarga,
     )
     db.guardar_partido(partido)
 

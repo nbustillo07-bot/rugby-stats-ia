@@ -199,6 +199,10 @@ ESQUEMA_FICHAS = {
                         "properties": {r: {"type": "string"} for r in RASGOS},
                     },
                     "nota": {"type": "string"},
+                    # Dónde está el jugador en el cuadro de t_segundos, en
+                    # proporciones de 0 a 1: [x izquierda, y arriba, x derecha,
+                    # y abajo]. Con esto se recorta la ficha visual.
+                    "caja": {"type": "array", "items": {"type": "number"}},
                 },
                 "required": ["numero", "t_segundos", "confianza", "rasgos"],
             },
@@ -257,7 +261,13 @@ rasgos muy marcados pero no le viste el número, no lo devuelvas: para eso está
 el paso siguiente.
 
 Podés devolver varias lecturas del mismo número en momentos distintos: sirve, \
-porque los jugadores se embarran y se cambian las vendas."""
+porque los jugadores se embarran y se cambian las vendas.
+
+En "caja" indicá dónde está ese jugador en el cuadro de "t_segundos", como \
+[x izquierda, y arriba, x derecha, y abajo] en proporciones de 0 a 1 del \
+ancho y del alto del cuadro (0,0 es la esquina de arriba a la izquierda). \
+La caja tiene que encerrar al jugador entero, de la cabeza a los botines. Si \
+no estás seguro de cuál es en el cuadro, no pongas caja."""
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +533,44 @@ se dice, sin arreglarlo ni resumirlo, salvo los nombres.
 
 Tené en cuenta que el relator llega tarde: nombra al jugador uno o dos \
 segundos después de la acción, y a veces se corrige."""
+
+
+def prompt_relato_corregir(
+    jugadores_propios: list[Jugador],
+    jugadores_rivales: list[Jugador],
+    fragmentos: list[dict],
+) -> str:
+    """Para cuando el relato viene de subtítulos automáticos (Claude).
+
+    No hay audio que escuchar: hay un texto con errores en los nombres, y lo
+    que se pide es arreglarlos con el plantel y marcar a quién se nombra.
+    """
+    vocabulario: list[str] = []
+    for j in jugadores_propios + jugadores_rivales:
+        vocabulario.append(f"  {j.numero}. {', '.join(j.nombres_para_relato)}")
+    lista = "\n".join(vocabulario) if vocabulario else "  (no me pasaron planteles)"
+    texto = "\n".join(
+        f"[{f['inicio_s']:.1f}-{f['fin_s']:.1f}] {f['texto']}" for f in fragmentos
+    )
+    return f"""{ENCABEZADO}
+
+Esto es la transcripción automática del relato de un partido de rugby, con \
+el segundo del video de cada fragmento entre corchetes. La hizo una máquina \
+y se equivoca sobre todo con los apellidos poco comunes: escribe "Shofre" \
+por "Joffre", "Mawic" por "Massuitz".
+
+Nombres y apodos que puede haber dicho el relator (es tu vocabulario: si algo \
+suena parecido a uno de estos, es ese):
+{lista}
+
+TRANSCRIPCIÓN:
+{texto}
+
+TAREA: devolvé los mismos fragmentos, con los mismos tiempos, corrigiendo \
+SOLO los nombres de jugadores. No resumas, no completes, no arregles nada más.
+En "jugadores_nombrados" poné los números de los jugadores de la lista que se \
+nombran en cada fragmento. Si nombra a alguien que no está en la lista, no lo \
+pongas. Si dudás entre dos (hay apellidos repetidos), no pongas ninguno."""
 
 
 # ---------------------------------------------------------------------------

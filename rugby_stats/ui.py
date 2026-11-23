@@ -89,19 +89,29 @@ def barra_lateral() -> Partido | None:
         st.divider()
         st.markdown("### API")
         if cfg.hay_api_key:
-            st.success("Clave cargada")
+            nombre = "Claude" if cfg.proveedor == "claude" else "Gemini"
+            st.success(f"Clave de {nombre} cargada")
             if not st.session_state.get("forzar_simulado"):
-                mostrar_cupos()
+                if cfg.proveedor == "claude":
+                    mostrar_gasto(partido)
+                else:
+                    mostrar_cupos()
         else:
-            st.error("Sin GEMINI_API_KEY")
-            st.caption(
-                "Copiá `.env.example` a `.env` y poné tu clave de "
-                "[Google AI Studio](https://aistudio.google.com/apikey)."
-            )
+            st.error(f"Sin {cfg.nombre_variable_clave}")
+            if cfg.proveedor == "claude":
+                st.caption(
+                    "Hacé doble clic en `2_poner_clave.bat` y pegá la clave de "
+                    "[la consola de Claude](https://platform.claude.com/settings/keys)."
+                )
+            else:
+                st.caption(
+                    "Copiá `.env.example` a `.env` y poné tu clave de "
+                    "[Google AI Studio](https://aistudio.google.com/apikey)."
+                )
         st.session_state.forzar_simulado = st.toggle(
             "Modo simulado",
             value=st.session_state.get("forzar_simulado", not cfg.hay_api_key),
-            help="Corre todo el flujo con datos inventados, sin gastar cuota. "
+            help="Corre todo el flujo con datos inventados, sin gastar plata ni cuota. "
                  "Sirve para probar la interfaz y el Excel; los números no "
                  "miden nada.",
         )
@@ -109,6 +119,23 @@ def barra_lateral() -> Partido | None:
             st.warning("Simulado: los datos son inventados.")
 
     return partido
+
+
+def mostrar_gasto(partido) -> None:
+    """Cuánto lleva gastado el partido elegido contra el tope."""
+    cfg = config()
+    tope = cfg.tope_usd_por_partido
+    if partido is None or partido.id is None:
+        st.caption(f"Tope por partido: US$ {tope:.2f}")
+        return
+    gastado = db().gasto_partido(partido.id)
+    if tope > 0:
+        st.progress(
+            min(1.0, gastado / tope),
+            text=f"Gastado en este partido: US$ {gastado:.2f} de {tope:.2f}",
+        )
+    else:
+        st.caption(f"Gastado en este partido: US$ {gastado:.2f} (sin tope)")
 
 
 def estado_cupos() -> list[dict[str, Any]]:

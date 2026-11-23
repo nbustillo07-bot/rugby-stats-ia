@@ -1,16 +1,19 @@
 # Núcleo
-google-genai>=3.0,<4          # SDK de Gemini
+anthropic>=2.0               # SDK de Claude (el proveedor por defecto)
+google-genai>=3.0,<4          # SDK de Gemini (opcional: proveedor: gemini)
 streamlit>=1.49              # la interfaz (hace falta >=1.49 por el parámetro width)
 openpyxl>=3.1                # el Excel con fórmulas
 PyYAML>=6.0                  # config.yaml
 pandas>=2.0                  # tablas de la interfaz
+Pillow>=10.0                 # recortar las fotos de cada jugador
 
-# Video. Opcionales pero muy recomendados:
-#   yt-dlp  -> bajar videos de YouTube y de otras URLs, y averiguar cuánto duran
-#   ffmpeg  -> cortar los clips de la cola de revisión (NO se instala con pip:
-#              en Windows `winget install ffmpeg`, en Mac `brew install ffmpeg`,
-#              en Linux `sudo apt install ffmpeg`)
+# Video
+#   yt-dlp         -> bajar videos de YouTube (solo el tramo que hace falta) y
+#                     los subtítulos automáticos con el relato
+#   imageio-ffmpeg -> trae ffmpeg adentro: saca los cuadros que mira Claude.
+#                     Si ya tenés ffmpeg instalado, se usa ese.
 yt-dlp>=2024.1
+imageio-ffmpeg>=0.5
 
 # Tests
 pytest>=8.0

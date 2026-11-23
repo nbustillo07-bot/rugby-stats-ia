@@ -128,6 +128,15 @@ CREATE TABLE IF NOT EXISTS progreso (
     PRIMARY KEY (partido_id, paso)
 );
 
+CREATE TABLE IF NOT EXISTS gastos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    partido_id INTEGER NOT NULL REFERENCES partidos(id) ON DELETE CASCADE,
+    momento TEXT NOT NULL,
+    proveedor TEXT DEFAULT '',
+    usd REAL NOT NULL DEFAULT 0,
+    detalle TEXT DEFAULT '{}'
+);
+
 CREATE INDEX IF NOT EXISTS ix_eventos_partido ON eventos(partido_id, t_segundos);
 CREATE INDEX IF NOT EXISTS ix_fichas_partido ON fichas(partido_id, equipo, jugador_numero);
 CREATE INDEX IF NOT EXISTS ix_tramos_partido ON tramos(partido_id, inicio_s);
@@ -161,7 +170,19 @@ class BaseDatos:
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA foreign_keys = ON")
         self.con.executescript(ESQUEMA)
+        self._migrar()
         self.con.commit()
+
+    def _migrar(self) -> None:
+        """Columnas que se agregaron después: las bases viejas las reciben acá."""
+        nuevas = {"fichas": {"imagen": "TEXT DEFAULT ''"}}
+        for tabla, columnas in nuevas.items():
+            existentes = {
+                fila[1] for fila in self.con.execute(f"PRAGMA table_info({tabla})")
+            }
+            for nombre, tipo in columnas.items():
+                if nombre not in existentes:
+                    self.con.execute(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {tipo}")
 
     def cerrar(self) -> None:
         self.con.close()
@@ -335,8 +356,8 @@ class BaseDatos:
             cur = con.execute(
                 """INSERT INTO fichas
                    (partido_id, equipo, jugador_numero, t_segundos, rasgos,
-                    confianza, fuente, confirmada, nota)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                    confianza, fuente, confirmada, nota, imagen)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (
                     partido_id,
                     ficha.equipo,
@@ -347,6 +368,7 @@ class BaseDatos:
                     ficha.fuente,
                     1 if ficha.confirmada else 0,
                     ficha.nota,
+                    ficha.imagen or "",
                 ),
             )
             ficha.id = int(cur.lastrowid)
@@ -364,6 +386,7 @@ class BaseDatos:
             fuente=f["fuente"] or "video",
             confirmada=bool(f["confirmada"]),
             nota=f["nota"] or "",
+            imagen=(f["imagen"] if "imagen" in f.keys() else "") or "",
         )
 
     def fichas(self, partido_id: int, equipo: str | None = None) -> list[Ficha]:
@@ -673,6 +696,44 @@ class BaseDatos:
     def borrar_transcripcion(self, partido_id: int) -> None:
         with self.tx() as con:
             con.execute("DELETE FROM transcripcion WHERE partido_id=?", (partido_id,))
+
+    # ------------------------------------------------------------------
+    # Gastos (cuánta plata se fue en la API, por partido)
+    # ------------------------------------------------------------------
+
+    def registrar_gasto(
+        self, partido_id: int, usd: float, proveedor: str = "",
+        detalle: dict[str, Any] | None = None,
+    ) -> None:
+        if not usd:
+            return
+        with self.tx() as con:
+            con.execute(
+                """INSERT INTO gastos (partido_id, momento, proveedor, usd, detalle)
+                   VALUES (?,?,?,?,?)""",
+                (partido_id, _ahora(), proveedor, float(usd),
+                 json.dumps(detalle or {}, ensure_ascii=False)),
+            )
+
+    def gasto_partido(self, partido_id: int) -> float:
+        fila = self.con.execute(
+            "SELECT COALESCE(SUM(usd), 0) FROM gastos WHERE partido_id=?", (partido_id,)
+        ).fetchone()
+        return float(fila[0] or 0.0)
+
+    def gastos(self, partido_id: int) -> list[dict[str, Any]]:
+        filas = self.con.execute(
+            "SELECT * FROM gastos WHERE partido_id=? ORDER BY id", (partido_id,)
+        ).fetchall()
+        return [
+            {
+                "momento": f["momento"],
+                "proveedor": f["proveedor"],
+                "usd": f["usd"],
+                "detalle": json.loads(f["detalle"] or "{}"),
+            }
+            for f in filas
+        ]
 
     # ------------------------------------------------------------------
     # Progreso (para poder retomar)

@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import streamlit as st
 
-from rugby_stats import ui
+from rugby_stats import costos, ui
 from rugby_stats.analisis import pipeline
 from rugby_stats.gemini.cliente import CupoDiarioAgotado
+from rugby_stats.proveedor_claude import SinSaldo, TopeDeGastoAlcanzado
 
 st.set_page_config(page_title="Análisis · rugby-stats-ia", page_icon="🏉", layout="wide")
 ui.barra_lateral()
@@ -35,6 +36,55 @@ if not propios:
 duracion = partido.video.duracion_s
 desde = partido.analizar_desde_s
 hasta = partido.analizar_hasta_s or duracion
+
+
+def _estimar_cupos(cfg, largo: float) -> None:
+    """Con Gemini gratis, lo que limita son los pedidos por día."""
+    # Cuenta de servilleta de cuántos pedidos lleva. Lo que limita en el
+    # plan gratis no son los tokens sino los pedidos por día.
+    import math
+
+    juego = largo * 0.35                      # ~1/3 del video es juego real
+    v_j = cfg.velocidad("juego")
+    estimado = {
+        "gruesa": math.ceil(largo / cfg.velocidad("gruesa").ventana_s),
+        "relato": math.ceil(largo / 600),
+        "cambios": math.ceil(largo / 600),
+        "eventos": math.ceil(juego / v_j.ventana_s) + math.ceil(largo / 300),
+        "fichas": min(10, max(2, math.ceil(largo / 180))),
+        "contactos": math.ceil(juego / 25),   # un contacto cada ~25 s de juego
+    }
+    por_nivel = {"fuerte": 0, "liviano": 0}
+    for paso, n in estimado.items():
+        por_nivel[cfg.nivel_de(paso)] += n
+    topes = cfg.cupo_diario
+    tope = {
+        nivel: sum(topes.get(m, 0) for m in (cfg.niveles or {}).get(nivel, []))
+        for nivel in por_nivel
+    }
+    st.markdown(
+        f"Pedidos estimados: **~{por_nivel['fuerte']} a modelos fuertes** "
+        f"(el plan gratis da {tope['fuerte']} por día) y "
+        f"**~{por_nivel['liviano']} a modelos livianos** "
+        f"(da {tope['liviano']} por día)."
+    )
+    st.caption(
+        "Es una estimación gruesa: el número real depende de cuánto juego y "
+        "cuántos contactos haya. Los fuertes se usan para las fichas y para "
+        "resolver quién tackleó; los livianos, para todo lo demás."
+    )
+    if tope["fuerte"] and por_nivel["fuerte"] > tope["fuerte"]:
+        dias = math.ceil(por_nivel["fuerte"] / tope["fuerte"])
+        st.warning(
+            f"Este tramo no entra en un día de cupo gratis de los modelos "
+            f"fuertes: serían unos {dias} días. No hace falta hacer nada "
+            "especial: cuando se acabe el cupo el análisis frena solo, y al "
+            "día siguiente apretás **Correr análisis** y sigue desde donde "
+            "quedó. (Si preferís terminar el mismo día con menos precisión, "
+            "poné `si_se_agota_el_fuerte: seguir_con_liviano` en config.yaml.)"
+        )
+
+
 with st.expander("Cuánto video se va a analizar y qué cuesta", expanded=True):
     if hasta is None:
         st.warning(
@@ -47,53 +97,32 @@ with st.expander("Cuánto video se va a analizar y qué cuesta", expanded=True):
             f"Tramo: **{ui.mm_ss(desde)} a {ui.mm_ss(hasta)}** "
             f"({largo / 60:.1f} minutos)."
         )
-        # Cuenta de servilleta de cuántos pedidos lleva. Lo que limita en el
-        # plan gratis no son los tokens sino los pedidos por día.
-        import math
-
-        juego = largo * 0.35                      # ~1/3 del video es juego real
-        v_j = cfg.velocidad("juego")
-        estimado = {
-            "gruesa": math.ceil(largo / cfg.velocidad("gruesa").ventana_s),
-            "relato": math.ceil(largo / 600),
-            "cambios": math.ceil(largo / 600),
-            "eventos": math.ceil(juego / v_j.ventana_s) + math.ceil(largo / 300),
-            "fichas": min(10, max(2, math.ceil(largo / 180))),
-            "contactos": math.ceil(juego / 25),   # un contacto cada ~25 s de juego
-        }
-        por_nivel = {"fuerte": 0, "liviano": 0}
-        for paso, n in estimado.items():
-            por_nivel[cfg.nivel_de(paso)] += n
-        topes = cfg.cupo_diario
-        tope = {
-            nivel: sum(topes.get(m, 0) for m in (cfg.niveles or {}).get(nivel, []))
-            for nivel in por_nivel
-        }
-        st.markdown(
-            f"Pedidos estimados: **~{por_nivel['fuerte']} a modelos fuertes** "
-            f"(el plan gratis da {tope['fuerte']} por día) y "
-            f"**~{por_nivel['liviano']} a modelos livianos** "
-            f"(da {tope['liviano']} por día)."
-        )
-        st.caption(
-            "Es una estimación gruesa: el número real depende de cuánto juego y "
-            "cuántos contactos haya. Los fuertes se usan para las fichas y para "
-            "resolver quién tackleó; los livianos, para todo lo demás."
-        )
-        if tope["fuerte"] and por_nivel["fuerte"] > tope["fuerte"]:
-            dias = math.ceil(por_nivel["fuerte"] / tope["fuerte"])
-            st.warning(
-                f"Este tramo no entra en un día de cupo gratis de los modelos "
-                f"fuertes: serían unos {dias} días. No hace falta hacer nada "
-                "especial: cuando se acabe el cupo el análisis frena solo, y al "
-                "día siguiente apretás **Correr análisis** y sigue desde donde "
-                "quedó. (Si preferís terminar el mismo día con menos precisión, "
-                "poné `si_se_agota_el_fuerte: seguir_con_liviano` en config.yaml.)"
+        if cfg.proveedor == "claude":
+            _tramo, _entero = costos.tramo_y_partido(partido, cfg)
+            ya = base.gasto_partido(partido.id)
+            tope = cfg.tope_usd_por_partido
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Este tramo (estimado)", f"US$ {_tramo.usd:.2f}" if _tramo else "—")
+            c2.metric("Partido entero (estimado)", f"US$ {_entero.usd:.2f}")
+            c3.metric("Ya gastado en este partido", f"US$ {ya:.2f}")
+            st.caption(
+                "Es una estimación: lo real depende de cuánto juego y cuántos "
+                "contactos haya. Lo que ya se analizó queda guardado y no se "
+                "vuelve a cobrar."
             )
+            if _tramo and tope > 0 and ya + _tramo.usd > tope:
+                st.warning(
+                    f"Con lo estimado se pasaría del tope de US$ {tope:.2f} por "
+                    "partido. El análisis frena solo antes de pasarlo; si querés "
+                    "terminarlo, subí `tope_usd_por_partido` en config.yaml."
+                )
+        else:
+            _estimar_cupos(cfg, largo)
         from rugby_stats.gemini import video as video_mod
 
         if (
-            partido.video.tipo == "youtube"
+            cfg.proveedor != "claude"
+            and partido.video.tipo == "youtube"
             and not partido.video.ruta_local
             and (duracion or 0) > cfg.descargar_si_dura_mas_de_s > 0
             and video_mod.hay_ytdlp()
@@ -108,8 +137,7 @@ with st.expander("Cuánto video se va a analizar y qué cuesta", expanded=True):
         if largo > 1200:
             st.info(
                 "Para la primera corrida conviene un tramo de cinco o diez "
-                "minutos: alcanza para medir la precisión y no te comés la "
-                "cuota del día."
+                "minutos: alcanza para medir la precisión sin gastar de más."
             )
 
 # -- correr ----------------------------------------------------------------
@@ -164,6 +192,17 @@ if col1.button("Correr análisis", type="primary", disabled=not elegidos):
             "No se perdió nada. Mañana (o cuando se renueve el cupo) apretá de "
             "nuevo **Correr análisis** con los mismos pasos tildados."
         )
+    except TopeDeGastoAlcanzado as exc:
+        barra.empty()
+        st.warning(str(exc))
+        st.info(
+            "Lo analizado hasta acá quedó guardado. Si querés seguir, subí "
+            "`tope_usd_por_partido` en config.yaml y apretá de nuevo "
+            "**Correr análisis**: sigue desde donde quedó."
+        )
+    except SinSaldo as exc:
+        barra.empty()
+        st.error(str(exc))
     except Exception as exc:  # noqa: BLE001
         barra.empty()
         st.error(f"Se cortó: {exc}")

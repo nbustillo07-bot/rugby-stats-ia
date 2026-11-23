@@ -26,6 +26,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from ..cuadros import duracion_video, ffmpeg_exe
 from ..modelos import FuenteVideo
 
 log = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class ErrorVideo(RuntimeError):
 
 
 def hay_ffmpeg() -> bool:
-    return shutil.which("ffmpeg") is not None
+    return ffmpeg_exe() is not None
 
 
 def _cmd_ytdlp() -> list[str] | None:
@@ -88,19 +89,7 @@ def duracion_s(ruta_o_url: str) -> float | None:
     """Largo del video en segundos. ffprobe para archivos, yt-dlp para URLs."""
     p = Path(ruta_o_url)
     if p.exists():
-        if not shutil.which("ffprobe"):
-            return None
-        try:
-            salida = subprocess.run(
-                [
-                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1", str(p),
-                ],
-                capture_output=True, text=True, timeout=60, check=True,
-            ).stdout.strip()
-            return float(salida)
-        except (subprocess.SubprocessError, ValueError):
-            return None
+        return duracion_video(p)
     cmd = _cmd_ytdlp()
     if cmd is None:
         return None
@@ -115,21 +104,33 @@ def duracion_s(ruta_o_url: str) -> float | None:
         return None
 
 
-def descargar(referencia: str, destino: Path, calidad: str = "480") -> Path:
-    """Baja un video con yt-dlp.
+def descargar(
+    referencia: str,
+    destino: Path,
+    calidad: str | int = "480",
+    desde_s: float | None = None,
+    hasta_s: float | None = None,
+) -> Path:
+    """Baja un video con yt-dlp, entero o solo un pedazo.
 
-    480p alcanza y sobra: el modelo reduce cada cuadro a una resolución fija,
-    y un archivo más chico sube más rápido y entra en el límite de 2 GB de la
-    Files API aunque el partido sea largo.
+    Con ``desde_s`` y ``hasta_s`` baja solo ese tramo (en segundos del video
+    completo). Para probar con seis minutos no tiene sentido bajar el partido
+    entero. El corte se hace exacto (``--force-keyframes-at-cuts``): si no,
+    el archivo podría arrancar unos segundos antes y todos los tiempos
+    quedarían corridos.
     """
     cmd_base = _cmd_ytdlp()
     if cmd_base is None:
         raise ErrorVideo(
-            "Falta yt-dlp para bajar el video. Instalalo con: pip install yt-dlp"
+            "Falta yt-dlp para bajar el video. Volvé a correr 1_instalar.bat."
         )
     destino.mkdir(parents=True, exist_ok=True)
-    plantilla = str(destino / "%(id)s.%(ext)s")
-    if hay_ffmpeg():
+    tramo = ""
+    if desde_s is not None and hasta_s is not None and hasta_s > desde_s:
+        tramo = f"_{int(desde_s)}-{int(hasta_s)}"
+    plantilla = str(destino / f"%(id)s{tramo}.%(ext)s")
+    exe = ffmpeg_exe()
+    if exe:
         formato = (
             f"bestvideo[height<={calidad}][ext=mp4]+bestaudio[ext=m4a]/"
             f"best[height<={calidad}][ext=mp4]/best[height<={calidad}]/best"
@@ -143,10 +144,22 @@ def descargar(referencia: str, destino: Path, calidad: str = "480") -> Path:
         "-f", formato,
         "--merge-output-format", "mp4",
         "-o", plantilla, "--print", "after_move:filepath",
-        referencia,
     ]
+    if exe:
+        cmd += ["--ffmpeg-location", exe]
+    if tramo:
+        if not exe:
+            raise ErrorVideo("Para bajar solo un tramo hace falta ffmpeg.")
+        cmd += [
+            "--download-sections", f"*{float(desde_s):.2f}-{float(hasta_s):.2f}",
+            "--force-keyframes-at-cuts",
+        ]
+    cmd.append(referencia)
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, check=True)
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=3600, check=True,
+            encoding="utf-8", errors="replace",
+        )
     except subprocess.CalledProcessError as exc:
         raise ErrorVideo(
             f"yt-dlp no pudo bajar el video: {(exc.stderr or '')[-400:]}"
@@ -170,15 +183,16 @@ def cortar_clip(
     origen: Path, inicio_s: float, duracion: float, destino: Path
 ) -> Path:
     """Corta un clip con ffmpeg, para mostrarlo en la cola de revisión."""
-    if not hay_ffmpeg():
+    exe = ffmpeg_exe()
+    if exe is None:
         raise ErrorVideo(
-            "Falta ffmpeg para cortar clips. En Windows: winget install ffmpeg"
+            "Falta ffmpeg para cortar clips. Volvé a correr 1_instalar.bat."
         )
     destino.parent.mkdir(parents=True, exist_ok=True)
     if destino.exists():
         return destino
     cmd = [
-        "ffmpeg", "-y", "-v", "error",
+        exe, "-y", "-v", "error",
         "-ss", f"{max(0.0, inicio_s):.3f}", "-i", str(origen),
         "-t", f"{duracion:.3f}",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
@@ -237,11 +251,79 @@ def _subir(fuente: FuenteVideo, cliente) -> None:
     fuente.subido_en = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+#: Margen que se baja de más antes y después del tramo a analizar: el
+#: re-examen de contactos y las fichas miran un poco por fuera.
+MARGEN_TRAMO_S = 30.0
+
+
+def _cubre(fuente: FuenteVideo, desde_s: float | None, hasta_s: float | None) -> bool:
+    """¿El archivo bajado cubre el tramo pedido?"""
+    if not fuente.ruta_local or not Path(fuente.ruta_local).exists():
+        return False
+    if fuente.recorte_desde_s is None:
+        return True  # es el video entero
+    if desde_s is None or hasta_s is None:
+        return False  # se pide todo y lo que hay es un pedazo
+    return fuente.recorte_desde_s <= desde_s and (
+        fuente.recorte_hasta_s is None or hasta_s <= fuente.recorte_hasta_s
+    )
+
+
+def preparar_local(
+    fuente: FuenteVideo,
+    cliente,
+    dir_trabajo: Path,
+    desde_s: float | None = None,
+    hasta_s: float | None = None,
+    calidad: int = 720,
+) -> FuenteVideo:
+    """Deja el video en disco, para los proveedores que sacan cuadros (Claude).
+
+    Si se pidió un tramo, baja solo ese tramo (con un margen). Si ya estaba
+    bajado y cubre lo pedido, no vuelve a bajar nada.
+    """
+    dir_trabajo = Path(dir_trabajo)
+    dir_trabajo.mkdir(parents=True, exist_ok=True)
+
+    if fuente.tipo == "archivo":
+        if not fuente.ruta_local or not Path(fuente.ruta_local).exists():
+            raise ErrorVideo(f"No encuentro el archivo {fuente.ruta_local or fuente.referencia}.")
+        fuente.recorte_desde_s = None
+        fuente.recorte_hasta_s = None
+    elif not _cubre(fuente, desde_s, hasta_s):
+        if desde_s is not None and hasta_s is not None:
+            a = max(0.0, desde_s - MARGEN_TRAMO_S)
+            b = hasta_s + MARGEN_TRAMO_S
+            log.info("Bajando el tramo %.0f-%.0f s del video", a, b)
+            fuente.ruta_local = str(descargar(fuente.referencia, dir_trabajo, calidad, a, b))
+            fuente.recorte_desde_s = a
+            fuente.recorte_hasta_s = b
+        else:
+            log.info("Bajando el video entero")
+            fuente.ruta_local = str(descargar(fuente.referencia, dir_trabajo, calidad))
+            fuente.recorte_desde_s = None
+            fuente.recorte_hasta_s = None
+
+    if fuente.recorte_desde_s is None and fuente.duracion_s is None:
+        fuente.duracion_s = duracion_video(fuente.ruta_local)
+    if fuente.duracion_s is None and fuente.tipo != "archivo":
+        fuente.duracion_s = duracion_s(fuente.referencia)
+    fuente.uri_subida = fuente.ruta_local
+    fuente.subido_en = None
+    registrar = getattr(cliente, "registrar_video", None)
+    if registrar:
+        registrar(fuente.ruta_local, fuente.recorte_desde_s or 0.0)
+    return fuente
+
+
 def preparar(
     fuente: FuenteVideo,
     cliente,
     dir_trabajo: Path,
     descargar_si_dura_mas_de_s: float = 1200,
+    desde_s: float | None = None,
+    hasta_s: float | None = None,
+    calidad: int = 720,
 ) -> FuenteVideo:
     """Deja la fuente lista para analizar y devuelve el URI que usa Gemini.
 
@@ -251,6 +333,8 @@ def preparar(
     Se puede llamar todas las veces que haga falta: no vuelve a bajar lo que
     ya está en disco ni a subir lo que sigue vigente.
     """
+    if getattr(cliente, "necesita_video_local", False):
+        return preparar_local(fuente, cliente, dir_trabajo, desde_s, hasta_s, calidad)
     dir_trabajo = Path(dir_trabajo)
     dir_trabajo.mkdir(parents=True, exist_ok=True)
 

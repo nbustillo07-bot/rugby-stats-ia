@@ -1,5 +1,57 @@
 # Configuración de rugby-stats-ia
 #
+# ---------------------------------------------------------------------------
+# QUIÉN MIRA EL VIDEO
+# ---------------------------------------------------------------------------
+#   claude  -> la API de Claude (Anthropic). Pago por uso, sin cupos diarios.
+#              Claude no recibe video: el programa baja el tramo a analizar,
+#              saca cuadros y se los manda como imágenes. El relato sale de
+#              los subtítulos automáticos de YouTube. La clave va en .env como
+#              ANTHROPIC_API_KEY.
+#   gemini  -> la API de Gemini (Google). Recibe el video entero y escucha el
+#              audio. Tiene plan gratis con cupos diarios muy chicos. La clave
+#              va en .env como GEMINI_API_KEY.
+proveedor: claude
+
+claude:
+  # Modelos por nivel. "fuerte" para lo difícil (leer números, decidir quién
+  # tackleó); "liviano" para el volumen (juego / tiempo muerto, eventos,
+  # relato, cambios). Se puede poner el mismo modelo en los dos.
+  modelos:
+    fuerte:
+      - claude-sonnet-5-5
+    liviano:
+      - claude-haiku-5-5
+  # Cuánto "piensa" el modelo antes de contestar. Lo que piensa se cobra como
+  # salida, así que para extraer datos alcanza con "low". Valores: low,
+  # medium, high, xhigh, max.
+  esfuerzo: low
+  # TOPE DE GASTO por partido, en dólares. Antes de cada pedido se calcula
+  # cuánto va a costar, y si con eso se pasa del tope, el análisis frena con
+  # un aviso. Lo hecho queda guardado. 0 = sin tope (no recomendado).
+  tope_usd_por_partido: 10
+  # Cuántos cuadros como máximo en un solo pedido. Si una ventana pide más,
+  # se bajan los cuadros por segundo para que entren.
+  max_cuadros_por_pedido: 80
+  # Precios en dólares por millón de tokens, verificados el 23/11/2026 en
+  # platform.claude.com. Sirven para estimar y para el tope: si cambian,
+  # actualizalos acá. Haiku cuesta 5 veces más si un pedido pasa de 100.000
+  # tokens; los pedidos de este programa quedan bastante por debajo.
+  precios:
+    claude-sonnet-5-5: {entrada: 2.00, salida: 10.00, cache_lectura: 0.10, cache_escritura: 2.50}
+    claude-haiku-5-5: {entrada: 0.10, salida: 0.50, cache_lectura: 0.01, cache_escritura: 0.125}
+    claude-opus-5-5: {entrada: 4.00, salida: 20.00, cache_lectura: 0.20, cache_escritura: 5.00}
+  # Velocidades para Claude. Pisan a las de "velocidades" (más abajo).
+  # Cada cuadro cuesta ancho/28 x alto/28 tokens: uno de 640 px son ~300
+  # tokens, uno de 1008 px ~750.
+  velocidades:
+    gruesa:   {fps: 0.2, ventana_s: 300, ancho: 448}
+    juego:    {fps: 2.0, ventana_s: 30,  ancho: 640}
+    contacto: {fps: 6.0, ventana_s: 3.0, ancho: 1008, margen_antes_s: 1.5, margen_despues_s: 1.5}
+    fichas:   {fps: 1.0, ventana_s: 40,  ancho: 1008}
+
+# ---------------------------------------------------------------------------
+#
 # Este archivo no sabe nada de ningún club en particular. Los equipos, las
 # camisetas y los jugadores se cargan por partido desde la interfaz.
 # Acá van las decisiones que valen para cualquier partido.
@@ -147,6 +199,9 @@ video:
   # Si el diagnóstico (6_prueba_real.bat) alguna vez muestra miles de tokens
   # por segundo de video, poné acá 1200.
   descargar_si_dura_mas_de_s: 0
+  # Calidad con la que se baja el video para Claude (alto en píxeles). 720
+  # alcanza para leer números; más es más lento de bajar sin ganar mucho.
+  calidad_descarga: 720
   # Carpeta donde se guardan los videos bajados y los clips cortados.
   dir_trabajo: data/video
   # Largo del clip que se muestra en la cola de revisión.

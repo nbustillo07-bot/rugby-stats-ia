@@ -152,6 +152,13 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = cargar_config(args.config)
+    if cfg.proveedor == "claude":
+        # Con Claude no hay cupos que averiguar: la prueba útil es medir
+        # cuánto cuesta de verdad y qué contesta.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from prueba_claude import main as prueba_claude
+
+        return prueba_claude()
     print("=" * 60)
     print("  rugby-stats-ia — diagnóstico contra la API real")
     print("=" * 60)

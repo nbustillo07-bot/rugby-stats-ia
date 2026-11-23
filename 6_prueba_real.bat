@@ -8,21 +8,21 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
 )
-echo Esta prueba le hace una docena de pedidos a Gemini sobre un tramo
-echo corto del video y anota todo lo que pasa. Tarda unos minutos.
+echo Actualizando lo necesario...
+".venv\Scripts\python.exe" -m pip install -q --disable-pip-version-check -r requirements.txt
 echo.
-echo Si ya cargaste un partido en la aplicacion, apreta Enter y usa ese.
-echo Si no, pega el link de YouTube del partido y apreta Enter.
+echo ============================================
+echo   Prueba real: 2 minutos del partido cargado
+echo ============================================
 echo.
-set URL=
-set /p URL=Link del video (o Enter): 
+echo Corre el analisis completo sobre 2 minutos del ultimo partido que
+echo cargaste, mide cuanto costo DE VERDAD y lo proyecta al partido
+echo entero. Sale alrededor de 30 centavos de dolar. No toca el partido
+echo guardado: trabaja sobre una copia.
 echo.
-if defined URL (
-    ".venv\Scripts\python.exe" scripts\diagnostico.py --video "%URL%"
-) else (
-    ".venv\Scripts\python.exe" scripts\diagnostico.py
-)
+pause
+".venv\Scripts\python.exe" scripts\diagnostico.py
 echo.
-echo El resultado quedo guardado en la carpeta salidas\diagnostico
+echo El informe quedo en la carpeta salidas\diagnostico
 echo.
 pause

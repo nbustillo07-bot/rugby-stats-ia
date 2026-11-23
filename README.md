@@ -1,6 +1,7 @@
 # rugby-stats-ia
 
-Stats de rugby por jugador, sacadas del video del partido con la API de Gemini.
+Stats de rugby por jugador, sacadas del video del partido con la API de Claude
+(o, si preferís, con la de Gemini).
 
 Cargás el plantel (número de camiseta y nombre), le pasás el link del video, el
 sistema propone los eventos con quién los hizo, vos confirmás o corregís, y sale
@@ -10,11 +11,11 @@ un Excel con una fila por jugador.
 cargan por partido: no hay nada de ningún club escrito en el código. El video
 puede ser de YouTube, un archivo en tu compu o cualquier otra URL.
 
-> **Lo que todavía no está medido.** El sistema está armado y probado de punta
-> a punta, pero **nunca se corrió contra Gemini con un partido real**: falta
-> una clave de API para eso. Hasta que no corras un tramo y lo revises fila por
-> fila, la precisión es desconocida. El [primer hito](#el-primer-hito) está más
-> abajo.
+> **Lo que todavía no está medido.** El camino de Claude está probado de punta
+> a punta contra un servidor de mentira, pero el costo y la precisión con un
+> partido real **todavía no se midieron**. El primer paso es
+> `6_prueba_real.bat`: 2 minutos del partido, unos 30 centavos de dólar, y te
+> dice cuánto saldría el partido entero.
 
 ---
 
@@ -27,7 +28,8 @@ puede ser de YouTube, un archivo en tu compu o cualquier otra URL.
 - [Cómo funciona por dentro](#cómo-funciona-por-dentro)
 - [Qué sale en el Excel](#qué-sale-en-el-excel)
 - [Configuración](#configuración)
-- [Límites y costos de la API](#límites-y-costos-de-la-api)
+- [Costos con Claude](#costos-con-claude)
+- [Límites y costos de la API de Gemini](#límites-y-costos-de-la-api-de-gemini)
 - [Privacidad](#privacidad)
 - [Desde la terminal](#desde-la-terminal)
 - [Problemas conocidos](#problemas-conocidos)
@@ -129,29 +131,26 @@ pip install -r requirements.txt
 
 ### 4. La clave de la API
 
-La clave de Gemini es gratis. Se saca en
-[Google AI Studio](https://aistudio.google.com/apikey): entrás con tu cuenta de
-Google, "Create API key", y la copiás.
+Por defecto se usa **Claude** (`proveedor: claude` en `config.yaml`). La clave
+se saca en la [consola de Claude](https://platform.claude.com/settings/keys):
+"Create Key", y la copiás (empieza con `sk-ant-`). Se paga por uso, así que
+conviene ponerle un límite de gasto mensual ahí mismo.
 
-Después, copiá el archivo de ejemplo y pegá la clave adentro:
+En Windows, `2_poner_clave.bat` abre la consola y el archivo `.env`. A mano:
 
-**Windows:**
-```powershell
-copy .env.example .env
-notepad .env
-```
-
-**Mac o Linux:**
 ```bash
-cp .env.example .env
-nano .env
+cp .env.example .env      # en Windows: copy .env.example .env
 ```
 
-Tiene que quedar así, sin comillas ni espacios:
+y que quede así, sin comillas ni espacios:
 
 ```
-GEMINI_API_KEY=AIzaSy...
+ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+Para usar Gemini en cambio: `proveedor: gemini` en `config.yaml` y
+`GEMINI_API_KEY=` con una clave gratis de
+[Google AI Studio](https://aistudio.google.com/apikey).
 
 ### 5. Verificar que anda
 
@@ -484,7 +483,37 @@ Todo está en `config.yaml`, comentado línea por línea. Lo que más conviene t
 
 ---
 
-## Límites y costos de la API
+## Costos con Claude
+
+Claude no mira video: mira **cuadros**. El programa baja de YouTube solo el
+tramo a analizar, saca los cuadros con ffmpeg (cada uno con su segundo al
+lado) y se los manda. El relato sale de los **subtítulos automáticos** de
+YouTube, con los nombres corregidos contra el plantel (texto solo: barato).
+
+El trabajo se reparte en dos modelos (`claude.modelos` en `config.yaml`):
+
+- **Liviano, `claude-haiku-5-5`**: el volumen. Separar juego de tiempo muerto,
+  relato, cambios y la primera detección de eventos.
+- **Fuerte, `claude-sonnet-5-5`**: lo difícil. Leer los números para las
+  fichas (y recortar una foto de cada jugador) y resolver cada contacto con
+  esas fotos al lado.
+
+Estimación (a confirmar con `6_prueba_real.bat`):
+
+| | Sonnet + Haiku | Todo Sonnet |
+|---|---|---|
+| Tramo de 6 minutos | ~US$ 0,90 | — |
+| Partido entero (80 min) | **~US$ 5** | ~US$ 10 |
+
+La mayor parte (~US$ 4,30) es el re-examen de contactos con Sonnet.
+
+**Tope de gasto.** `claude.tope_usd_por_partido` (10 por defecto). Antes de
+cada pedido se calcula lo que puede costar y, si se pasaría del tope, el
+análisis frena **sin mandarlo**. Lo gastado queda registrado por partido (se
+ve en la barra lateral) y cuenta para el tope aunque cierres y vuelvas a
+abrir. Lo ya analizado no se vuelve a cobrar: queda en la caché.
+
+## Límites y costos de la API de Gemini
 
 **Lo que manda en el plan gratis son los pedidos por día**, no los tokens.
 Medido en una cuenta real el 14/11/2026 (los tuyos se ven en

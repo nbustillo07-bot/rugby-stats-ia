@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import streamlit as st
 
+from pathlib import Path
+
 from rugby_stats import revision, ui
-from rugby_stats.analisis import pasadas
+from rugby_stats.analisis import pipeline
 from rugby_stats.gemini import video as video_mod
 from rugby_stats.gemini.cliente import CupoDiarioAgotado
+from rugby_stats.proveedor_claude import SinSaldo, TopeDeGastoAlcanzado
 from rugby_stats.modelos import RASGOS
 
 st.set_page_config(page_title="Fichas · rugby-stats-ia", page_icon="🏉", layout="wide")
@@ -65,23 +68,21 @@ if col1.button("Buscar fichas", type="primary"):
         barra.progress(min(1.0, max(0.0, fraccion)), text=texto)
 
     try:
-        partido.video = video_mod.preparar(
-            partido.video, cliente, cfg.dir_video, cfg.descargar_si_dura_mas_de_s
+        # Por el pipeline: baja solo el tramo que hace falta, cuenta la plata
+        # contra el tope y recorta las fotos de cada jugador.
+        res = pipeline.correr(
+            base, cliente, partido.id, cfg,
+            pasos=["fichas"], forzar=True, progreso=avance,
         )
-        base.guardar_partido(partido)
-        previas = base.fichas_vigentes(partido.id, equipo.nombre, float("inf"))
-        nuevas = pasadas.pasada_fichas(
-            cliente, partido, jugadores, equipo, cfg,
-            tramos_muertos, previas, avance,
-        )
-        for f in nuevas:
-            base.guardar_ficha(partido.id, f)
         barra.progress(1.0, text="Listo")
-        st.success(f"{len(nuevas)} lecturas nuevas.")
+        st.success(res.resumen())
         st.rerun()
-    except CupoDiarioAgotado as exc:
+    except (CupoDiarioAgotado, TopeDeGastoAlcanzado) as exc:
         barra.empty()
         st.warning(str(exc))
+    except SinSaldo as exc:
+        barra.empty()
+        st.error(str(exc))
     except Exception as exc:  # noqa: BLE001 - se muestra el error, no se cae la app
         barra.empty()
         st.error(f"No pude completar la pasada: {exc}")
@@ -130,6 +131,12 @@ for item in filas:
 
         with cola:
             st.markdown(f"**Leído en {ui.mm_ss(mejor.t_segundos)}**")
+            if mejor.imagen and Path(mejor.imagen).exists():
+                st.image(
+                    mejor.imagen,
+                    caption="Así lo va a buscar en el contacto",
+                    width=180,
+                )
             if partido.video.tipo == "youtube":
                 st.video(
                     partido.video.referencia,

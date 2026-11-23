@@ -83,6 +83,12 @@ class Pedido:
     # Qué grupo de modelos atiende este pedido: "fuerte" (pocos pedidos por
     # día, para lo difícil) o "liviano" (muchos, para el volumen).
     nivel: str = "fuerte"
+    # Ancho de cada cuadro, para los proveedores que reciben imágenes (Claude).
+    # 0 = lo decide el proveedor según la resolución.
+    ancho: int = 0
+    # Fichas visuales: (etiqueta, ruta de la imagen) de cada jugador, para que
+    # el modelo compare imagen contra imagen. Gemini las ignora.
+    referencias: list = field(default_factory=list)
 
     def clave_cache(self, modelo: str) -> str:
         crudo = json.dumps(
@@ -95,6 +101,10 @@ class Pedido:
                 "fps": self.fps,
                 "res": self.resolucion,
                 "esquema": self.esquema,
+                # Solo entran a la clave si se usan, para no invalidar la
+                # caché de pedidos viejos.
+                **({"ancho": self.ancho} if self.ancho else {}),
+                **({"refs": [list(r) for r in self.referencias]} if self.referencias else {}),
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -260,6 +270,7 @@ class Contadores:
     reintentos: int = 0
     errores_429: int = 0
     saturaciones: int = 0
+    costo_usd: float = 0.0
     tokens_entrada: int = 0
     tokens_salida: int = 0
     segundos_video: float = 0.0
@@ -270,6 +281,7 @@ class Contadores:
             f"{self.reintentos} reintentos ({self.errores_429} por cuota, "
             f"{self.saturaciones} por saturación), "
             f"{self.tokens_entrada:,} tokens de entrada"
+            + (f", US$ {self.costo_usd:.2f}" if self.costo_usd else "")
         )
 
 
@@ -997,14 +1009,31 @@ def _reloj(segundos: float) -> str:
 
 
 def crear_cliente(cfg: Any, forzar_simulado: bool = False) -> Any:
-    """Devuelve el cliente real si hay clave, o el simulado si no."""
+    """Devuelve el cliente real del proveedor elegido, o el simulado."""
     if forzar_simulado or not cfg.hay_api_key:
         if not forzar_simulado:
             log.warning(
-                "No hay GEMINI_API_KEY: uso el modo simulado. "
-                "Las stats que salgan de acá no miden nada."
+                "No hay %s: uso el modo simulado. "
+                "Las stats que salgan de acá no miden nada.",
+                cfg.nombre_variable_clave,
             )
         return ClienteSimulado()
+    if cfg.proveedor == "claude":
+        from ..proveedor_claude import ClienteClaude
+
+        return ClienteClaude(
+            api_key=cfg.api_key,
+            niveles=cfg.niveles_claude,
+            precios=cfg.precios_claude,
+            esfuerzo=cfg.esfuerzo_claude,
+            dir_cache=cfg.dir_cache,
+            usar_cache=cfg.usar_cache,
+            dir_cuadros=cfg.dir_video.parent / "cuadros",
+            max_cuadros=cfg.max_cuadros_por_pedido,
+            tope_usd=cfg.tope_usd_por_partido,
+            max_reintentos=cfg.max_reintentos,
+            esperas=cfg.esperas_429,
+        )
     return ClienteGemini(
         api_key=cfg.api_key,
         modelo=cfg.modelo,

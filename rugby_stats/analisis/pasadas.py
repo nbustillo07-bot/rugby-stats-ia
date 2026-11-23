@@ -8,6 +8,7 @@ pueda cortar y retomar.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from ..config import Config
@@ -67,6 +68,53 @@ def _json(respuesta: Any, etiqueta: str) -> Any:
         return None
 
 
+def referencias_visuales(
+    fichas: dict[int, Ficha], jugadores: list[Jugador], maximo: int = 23
+) -> list[tuple[str, str]]:
+    """Las fichas que tienen imagen, como (etiqueta, ruta), para el modelo.
+
+    Primero las confirmadas por una persona, después las de más confianza.
+    """
+    por_numero = {j.numero: j for j in jugadores}
+    con_imagen = [
+        f for f in fichas.values() if f.imagen and Path(f.imagen).exists()
+    ]
+    con_imagen.sort(key=lambda f: (not f.confirmada, -f.confianza, f.jugador_numero))
+    salida: list[tuple[str, str]] = []
+    for f in con_imagen[:maximo]:
+        j = por_numero.get(f.jugador_numero)
+        etiqueta = j.etiqueta if j else str(f.jugador_numero)
+        salida.append((etiqueta, str(f.imagen)))
+    salida.sort(key=lambda r: r[0])
+    return salida
+
+
+def recortar_ficha(
+    partido: Partido, ficha: Ficha, caja: Any, cfg: Config
+) -> str:
+    """Guarda el recorte del jugador en el cuadro de la ficha. "" si no se pudo."""
+    video = partido.video.ruta_local
+    if not video or not Path(video).exists() or not isinstance(caja, (list, tuple)):
+        return ""
+    if len(caja) != 4:
+        return ""
+    from .. import cuadros as cuadros_mod
+
+    carpeta = cfg.dir_video.parent / "fichas"
+    base = f"p{partido.id}_{ficha.equipo}_{ficha.jugador_numero}_{int(ficha.t_segundos * 10)}"
+    base = "".join(c if c.isalnum() or c in "_-" else "_" for c in base)
+    try:
+        cuadro = cuadros_mod.un_cuadro(
+            video, ficha.t_segundos, carpeta / "cuadros" / f"{base}.jpg",
+            1280, partido.video.recorte_desde_s or 0.0,
+        )
+        recorte = cuadros_mod.recortar(cuadro, caja, carpeta / f"{base}.jpg")
+    except Exception as exc:  # noqa: BLE001 - sin recorte se sigue igual
+        log.warning("No pude recortar la ficha del %s: %s", ficha.jugador_numero, exc)
+        return ""
+    return str(recorte) if recorte else ""
+
+
 def _uri(partido: Partido) -> str:
     uri = partido.video.uri_subida or partido.video.referencia
     if not uri:
@@ -121,6 +169,7 @@ def pasada_gruesa(
                 resolucion=v.resolucion,
                 esquema=prompts.ESQUEMA_GRUESA,
                 etiqueta=f"gruesa {ini:.0f}-{fin:.0f}",
+                ancho=v.ancho,
                 nivel=cfg.nivel_de("gruesa"),
             )
         )
@@ -258,6 +307,7 @@ def pasada_fichas(
                 resolucion=v.resolucion,
                 esquema=prompts.ESQUEMA_FICHAS,
                 etiqueta=f"fichas {ini:.0f}-{fin:.0f}",
+                ancho=v.ancho,
                 nivel=cfg.nivel_de("fichas"),
             )
         )
@@ -291,6 +341,7 @@ def pasada_fichas(
                 confianza=reglas.normalizar_confianza(d.get("confianza")),
                 nota=str(d.get("nota") or ""),
             )
+            ficha.imagen = recortar_ficha(partido, ficha, d.get("caja"), cfg)
             fichas.append(ficha)
             anterior = previas.get(numero)
             if anterior is None or ficha.confianza >= anterior.confianza:
@@ -338,6 +389,7 @@ def pasada_eventos(
     a_revisar: list[dict[str, Any]] = []
     propio = partido.equipo_propio.nombre
     rival = partido.equipo_rival.nombre
+    referencias = referencias_visuales(fichas, jugadores_propios)
 
     for i, (ini, fin) in enumerate(rangos, 1):
         if progreso:
@@ -363,6 +415,8 @@ def pasada_eventos(
                 resolucion=v.resolucion,
                 esquema=prompts.ESQUEMA_EVENTOS,
                 etiqueta=f"eventos {ini:.0f}-{fin:.0f}",
+                ancho=v.ancho,
+                referencias=referencias,
                 nivel=cfg.nivel_de("eventos"),
             )
         )
@@ -553,6 +607,7 @@ def revisar_contactos(
     v = cfg.velocidad("contacto")
     a_revisar = agrupar_contactos(a_revisar)
     resueltos: list[dict[str, Any]] = []
+    referencias = referencias_visuales(fichas, jugadores_propios)
     propio = partido.equipo_propio.nombre
     rival = partido.equipo_rival.nombre
     numeros_propios = reglas.numeros_del_plantel(jugadores_propios)
@@ -589,6 +644,8 @@ def revisar_contactos(
                     resolucion=v.resolucion,
                     esquema=prompts.ESQUEMA_CONTACTO,
                     etiqueta=f"contacto {t:.1f} intento {intentos}",
+                ancho=v.ancho,
+                referencias=referencias,
                 nivel=cfg.nivel_de("contactos"),
                 )
             )
@@ -768,6 +825,10 @@ def pasada_relato(
     progreso=None,
 ) -> list[dict[str, Any]]:
     """Transcribe el relato pasándole los apellidos y apodos como vocabulario."""
+    if getattr(cliente, "necesita_video_local", False):
+        return _relato_por_subtitulos(
+            cliente, partido, jugadores_propios, jugadores_rivales, cfg, progreso
+        )
     desde, hasta = _tramo_a_analizar(partido)
     # El relato se pide en ventanas grandes: es audio, sale barato.
     rangos = ventanas(desde, hasta, 600, 10)
@@ -815,6 +876,87 @@ def pasada_relato(
             except (KeyError, TypeError, ValueError):
                 continue
     return fragmentos
+
+
+def _relato_por_subtitulos(
+    cliente: Any,
+    partido: Partido,
+    jugadores_propios: list[Jugador],
+    jugadores_rivales: list[Jugador],
+    cfg: Config,
+    progreso=None,
+) -> list[dict[str, Any]]:
+    """Para quien no escucha audio (Claude): subtítulos de YouTube + corrección.
+
+    Los subtítulos automáticos traen la frase y su momento, pero erran los
+    apellidos. Se le pasa el texto al modelo liviano con el plantel como
+    vocabulario para que corrija los nombres y marque a quién nombra. Es
+    texto solo: sale muy barato.
+    """
+    from .. import subtitulos
+    from ..gemini import video as video_mod
+
+    if partido.video.tipo != "youtube":
+        log.info("El relato por subtítulos solo funciona con videos de YouTube.")
+        return []
+    desde, hasta = _tramo_a_analizar(partido)
+    if progreso:
+        progreso("Bajando los subtítulos del relato", 0.1)
+    crudos = subtitulos.relato_desde_youtube(
+        partido.video.referencia, cfg.dir_video / "subtitulos",
+        video_mod._cmd_ytdlp(), desde, hasta,
+    )
+    if not crudos:
+        return []
+
+    corregidos: list[dict[str, Any]] = []
+    # En tandas de unos diez minutos de relato.
+    tandas: list[list[dict[str, Any]]] = [[]]
+    for f in crudos:
+        if tandas[-1] and f["inicio_s"] - tandas[-1][0]["inicio_s"] > 600:
+            tandas.append([])
+        tandas[-1].append(f)
+    for i, tanda in enumerate(tandas, 1):
+        if progreso:
+            progreso(f"Corrigiendo nombres del relato {i}/{len(tandas)}", i / len(tandas))
+        try:
+            r = cliente.pedir(
+                Pedido(
+                    prompt=prompts.prompt_relato_corregir(
+                        jugadores_propios, jugadores_rivales, tanda
+                    ),
+                    esquema=prompts.ESQUEMA_RELATO,
+                    etiqueta=f"relato {tanda[0]['inicio_s']:.0f}",
+                    nivel=cfg.nivel_de("relato"),
+                )
+            )
+            devueltos = _lista(_json(r, "relato"), "fragmentos")
+        except Exception as exc:  # noqa: BLE001 - sin corrección vale el crudo
+            log.warning("No pude corregir el relato (%s): queda sin corregir.", exc)
+            devueltos = []
+        if not devueltos:
+            corregidos.extend(tanda)
+            continue
+        for d in devueltos:
+            try:
+                corregidos.append(
+                    {
+                        "inicio_s": float(d["inicio_s"]),
+                        "fin_s": float(d["fin_s"]),
+                        "texto": str(d.get("texto") or ""),
+                        "jugadores_nombrados": [
+                            n
+                            for n in (
+                                reglas.limpiar_numero(x)
+                                for x in (d.get("jugadores_nombrados") or [])
+                            )
+                            if n is not None
+                        ],
+                    }
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+    return corregidos
 
 
 # ---------------------------------------------------------------------------
