@@ -102,7 +102,11 @@ export async function analizarDeNuevo(id: number): Promise<void> {
   await exigirSesion();
   const activos = await sql`SELECT 1 FROM trabajos WHERE partido_id = ${id} AND estado IN ('en_cola','corriendo')`;
   if (!activos.length) {
-    await sql`INSERT INTO trabajos (partido_id) VALUES (${id})`;
+    // Si ya había terminado, "analizar de nuevo" es rehacerlo de verdad (con lo
+    // último del programa); si se había cortado, se sigue donde quedó.
+    const [p] = await sql<{ estado: string }[]>`SELECT estado FROM partidos WHERE id = ${id}`;
+    const tipo = p?.estado === "listo" ? "rehacer" : "analizar";
+    await sql`INSERT INTO trabajos (partido_id, tipo) VALUES (${id}, ${tipo})`;
     await sql`UPDATE partidos SET estado = 'en_cola', avance = 0, mensaje = 'Esperando a la compu…',
               actualizado = now() WHERE id = ${id}`;
     await avisarCompu();
