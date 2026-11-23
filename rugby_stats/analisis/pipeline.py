@@ -20,13 +20,15 @@ from . import pasadas, reglas
 
 log = logging.getLogger(__name__)
 
+# Los cambios van antes de los contactos: saber quién está en cancha descarta
+# candidatos a la hora de decidir quién tackleó.
 PASOS = (
     "gruesa",
     "relato",
+    "cambios",
     "fichas",
     "eventos",
     "contactos",
-    "cambios",
 )
 
 NOMBRES_PASOS = {
@@ -195,7 +197,7 @@ def _correr(
         db.marcar_progreso(partido_id, "relato", "corriendo")
         fragmentos = pasadas.pasada_relato(
             cliente, partido, propios, rivales, cfg,
-            _sub(progreso, "relato", 0.15, 0.3),
+            _sub(progreso, "relato", 0.15, 0.25),
         )
         db.borrar_transcripcion(partido_id)
         db.guardar_transcripcion(partido_id, fragmentos)
@@ -206,7 +208,30 @@ def _correr(
 
     transcripcion = db.transcripcion(partido_id)
 
-    # ---- 3. fichas ----------------------------------------------------
+    # ---- 3. cambios ---------------------------------------------------
+    if hay_que_correr("cambios"):
+        db.marcar_progreso(partido_id, "cambios", "corriendo")
+        cambios = pasadas.pasada_cambios(
+            cliente, partido, propios, rivales, cfg, transcripcion,
+            _sub(progreso, "cambios", 0.25, 0.3),
+        )
+        for c in cambios:
+            if c["confianza"] < 0.5:
+                continue
+            if c["entra"] is not None:
+                db.actualizar_cambio(
+                    partido_id, c["equipo"], c["entra"], c["minuto"], None
+                )
+            if c["sale"] is not None:
+                db.actualizar_cambio(
+                    partido_id, c["equipo"], c["sale"], None, c["minuto"]
+                )
+        db.marcar_progreso(partido_id, "cambios", "listo", f"{len(cambios)} cambios")
+        res.pasos_corridos.append("cambios")
+
+    propios = db.plantel(partido_id, partido.equipo_propio.nombre)
+
+    # ---- 4. fichas ----------------------------------------------------
     if hay_que_correr("fichas"):
         db.marcar_progreso(partido_id, "fichas", "corriendo")
         previas = db.fichas_vigentes(
@@ -215,6 +240,7 @@ def _correr(
         nuevas = pasadas.pasada_fichas(
             cliente, partido, propios, partido.equipo_propio, cfg,
             tramos_muertos, previas, _sub(progreso, "fichas", 0.3, 0.45),
+            fotos_previas=db.fichas(partido_id, partido.equipo_propio.nombre),
         )
         for f in nuevas:
             db.guardar_ficha(partido_id, f)
@@ -237,6 +263,7 @@ def _correr(
         res.pasos_corridos.append("fichas")
 
     fichas = db.fichas_vigentes(partido_id, partido.equipo_propio.nombre, float("inf"))
+    fotos = db.fichas(partido_id, partido.equipo_propio.nombre)
 
     # ---- 4. eventos ---------------------------------------------------
     a_revisar: list[dict[str, Any]] = []
@@ -244,7 +271,8 @@ def _correr(
         db.marcar_progreso(partido_id, "eventos", "corriendo")
         eventos, a_revisar = pasadas.pasada_eventos(
             cliente, partido, propios, rivales, fichas, cfg,
-            tramos_juego, transcripcion, _sub(progreso, "eventos", 0.45, 0.7),
+            tramos_juego, transcripcion, _sub(progreso, "eventos", 0.45, 0.6),
+            fotos=fotos,
         )
         eventos = _validar(eventos, propios, rivales, cfg)
         db.borrar_eventos(partido_id, partido.analizar_desde_s or 0.0,
@@ -265,12 +293,15 @@ def _correr(
                     "pista": f"{e.accion} ({e.equipo})",
                 }
                 for e in db.eventos(partido_id)
-                if pasadas._es_contacto_dudoso(e, cfg)
+                if not e.revisado and (
+                    pasadas._es_contacto_dudoso(e, cfg)
+                    or (cfg.solo_tackles and e.accion in pasadas.ACCIONES_DE_CONTACTO)
+                )
             ]
         db.marcar_progreso(partido_id, "contactos", "corriendo")
         resueltos = pasadas.revisar_contactos(
             cliente, partido, propios, rivales, fichas, cfg, a_revisar,
-            _sub(progreso, "contactos", 0.7, 0.9),
+            _sub(progreso, "contactos", 0.6, 1.0), fotos=fotos,
         )
         for contacto in resueltos:
             contacto["eventos"] = _validar(contacto["eventos"], propios, rivales, cfg)
@@ -279,27 +310,6 @@ def _correr(
             partido_id, "contactos", "listo", f"{len(resueltos)} contactos re-examinados"
         )
         res.pasos_corridos.append("contactos")
-
-    # ---- 6. cambios ---------------------------------------------------
-    if hay_que_correr("cambios"):
-        db.marcar_progreso(partido_id, "cambios", "corriendo")
-        cambios = pasadas.pasada_cambios(
-            cliente, partido, propios, rivales, cfg, transcripcion,
-            _sub(progreso, "cambios", 0.9, 1.0),
-        )
-        for c in cambios:
-            if c["confianza"] < 0.5:
-                continue
-            if c["entra"] is not None:
-                db.actualizar_cambio(
-                    partido_id, c["equipo"], c["entra"], c["minuto"], None
-                )
-            if c["sale"] is not None:
-                db.actualizar_cambio(
-                    partido_id, c["equipo"], c["sale"], None, c["minuto"]
-                )
-        db.marcar_progreso(partido_id, "cambios", "listo", f"{len(cambios)} cambios")
-        res.pasos_corridos.append("cambios")
 
     todos = db.eventos(partido_id)
     res.eventos_nuevos = len(todos)
@@ -359,6 +369,13 @@ def _combinar_contactos(
             and e.accion in pasadas.ACCIONES_DE_CONTACTO
             and not e.revisado
         ]
+        if contacto.get("descartado"):
+            # El re-examen vio que no hubo tackle propio: lo que había propuesto
+            # la pasada rápida era un falso positivo.
+            for viejo in viejos:
+                if viejo.accion in ("Tackle", "Tackle errado") and viejo.id is not None:
+                    db.borrar_evento(viejo.id)
+            continue
         for familia in (("Carry",), ("Tackle", "Tackle errado")):
             nuevos_f = [e for e in contacto["eventos"] if e.accion in familia]
             viejos_f = [e for e in viejos if e.accion in familia]

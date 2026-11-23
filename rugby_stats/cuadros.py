@@ -272,3 +272,190 @@ def recortar(
         destino.parent.mkdir(parents=True, exist_ok=True)
         recorte.convert("RGB").save(destino, "JPEG", quality=88)
     return destino
+
+
+# ---------------------------------------------------------------------------
+# Zoom que sigue al contacto
+# ---------------------------------------------------------------------------
+
+
+def caja_valida(caja) -> tuple[float, float, float, float] | None:
+    """Una caja ``[x1, y1, x2, y2]`` entre 0 y 1 (o 0-1000), o None."""
+    if not isinstance(caja, (list, tuple)) or len(caja) != 4:
+        return None
+    try:
+        x1, y1, x2, y2 = (float(v) for v in caja)
+    except (TypeError, ValueError):
+        return None
+    escala = max(x1, y1, x2, y2)
+    if escala > 1.5:
+        if escala > 1000:
+            return None
+        x1, y1, x2, y2 = x1 / 1000, y1 / 1000, x2 / 1000, y2 / 1000
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    if min(x1, y1) < -0.05 or max(x2, y2) > 1.05 or x2 - x1 < 0.005 or y2 - y1 < 0.005:
+        return None
+    return (max(0.0, x1), max(0.0, y1), min(1.0, x2), min(1.0, y2))
+
+
+def interpolar_caja(
+    pista: list[tuple[float, tuple[float, float, float, float]]], t: float
+) -> tuple[float, float, float, float] | None:
+    """Dónde está el contacto en el segundo ``t``, entre los puntos conocidos."""
+    if not pista:
+        return None
+    pista = sorted(pista, key=lambda p: p[0])
+    if t <= pista[0][0]:
+        return pista[0][1]
+    if t >= pista[-1][0]:
+        return pista[-1][1]
+    for (t0, c0), (t1, c1) in zip(pista, pista[1:]):
+        if t0 <= t <= t1:
+            f = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
+            return tuple(a + (b - a) * f for a, b in zip(c0, c1))  # type: ignore[return-value]
+    return pista[-1][1]
+
+
+def ventana_zoom(
+    caja: tuple[float, float, float, float],
+    escala: float = 2.2,
+    minimo: float = 0.3,
+    relacion: float = 16 / 9,
+) -> tuple[float, float, float, float]:
+    """La zona a recortar alrededor de la caja, en proporción de pantalla.
+
+    Se agranda ``escala`` veces (para que entren los que llegan al contacto y
+    se levantan después) y nunca baja de ``minimo`` del ancho del cuadro.
+    """
+    x1, y1, x2, y2 = caja
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    # Ancho relativo; el alto relativo sale de la proporción (el cuadro es 16:9
+    # y el recorte también, así que en relativo son iguales).
+    lado = max((x2 - x1) * escala, (y2 - y1) * escala, minimo)
+    lado = min(1.0, lado)
+    _ = relacion
+    a = min(max(cx - lado / 2, 0.0), 1.0 - lado)
+    b = min(max(cy - lado / 2, 0.0), 1.0 - lado)
+    return (a, b, a + lado, b + lado)
+
+
+def extraer_zoom(
+    video: Path | str,
+    inicio_s: float,
+    fin_s: float,
+    fps: float,
+    pista: list[tuple[float, tuple[float, float, float, float]]],
+    ancho_salida: int,
+    dir_cache: Path | str,
+    desfase_archivo_s: float = 0.0,
+    maximo: int = 80,
+    ancho_fuente: int = 1920,
+    escala: float = 2.2,
+    minimo: float = 0.3,
+) -> list[Cuadro]:
+    """Cuadros recortados alrededor del contacto, que siguen la ``pista``.
+
+    Se sacan los cuadros en alta (``ancho_fuente``), y de cada uno se recorta
+    la zona donde está el contacto en ese momento, ampliada a
+    ``ancho_salida``. Así los botines, el casco y el número se ven varias
+    veces más grandes que en el cuadro entero, por el mismo costo.
+    """
+    from PIL import Image
+
+    base = extraer(video, inicio_s, fin_s, fps, ancho_fuente, dir_cache,
+                   desfase_archivo_s, maximo)
+    if not base or not pista:
+        return base
+    alto_salida = alto_para(ancho_salida)
+    salida: list[Cuadro] = []
+    for c in base:
+        caja = interpolar_caja(pista, c.t)
+        if caja is None:
+            continue
+        zx1, zy1, zx2, zy2 = ventana_zoom(caja, escala, minimo)
+        nombre = hashlib.sha256(
+            f"{c.ruta}|{zx1:.3f}|{zy1:.3f}|{zx2:.3f}|{zy2:.3f}|{ancho_salida}".encode()
+        ).hexdigest()[:16]
+        destino = Path(dir_cache) / "zoom" / f"{nombre}.jpg"
+        if not destino.exists():
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(c.ruta) as im:
+                w, h = im.size
+                recorte = im.crop((int(zx1 * w), int(zy1 * h), int(zx2 * w), int(zy2 * h)))
+                recorte = recorte.resize((ancho_salida, alto_salida))
+                recorte.convert("RGB").save(destino, "JPEG", quality=85)
+        salida.append(Cuadro(t=c.t, ruta=destino, ancho=ancho_salida, alto=alto_salida))
+    return salida
+
+
+# ---------------------------------------------------------------------------
+# Hojas con las fotos de cada jugador
+# ---------------------------------------------------------------------------
+
+
+def _fuente(tamano: int):
+    from PIL import ImageFont
+
+    for nombre in ("DejaVuSans-Bold.ttf", "arialbd.ttf", "Arial Bold.ttf", "arial.ttf"):
+        try:
+            return ImageFont.truetype(nombre, tamano)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=tamano)
+    except TypeError:  # Pillow viejo
+        return ImageFont.load_default()
+
+
+def hoja_referencias(
+    jugadores: list[tuple[str, list[Path | str]]],
+    destino: Path | str,
+    alto_foto: int = 200,
+    max_fotos: int = 3,
+) -> Path | None:
+    """Una imagen con varios jugadores: una fila por jugador con sus fotos.
+
+    Cada fila lleva el nombre escrito arriba. Juntar a cuatro o cinco
+    jugadores por imagen deja mandar varias fotos de cada uno sin pasar el
+    límite de imágenes por pedido.
+    """
+    from PIL import Image, ImageDraw
+
+    filas = []
+    for etiqueta, rutas in jugadores:
+        fotos = []
+        for r in rutas[:max_fotos]:
+            try:
+                with Image.open(r) as im:
+                    w, h = im.size
+                    fotos.append(im.convert("RGB").resize(
+                        (max(1, int(w * alto_foto / h)), alto_foto)))
+            except Exception:  # noqa: BLE001 - una foto rota no frena la hoja
+                continue
+        if fotos:
+            filas.append((etiqueta, fotos))
+    if not filas:
+        return None
+    barra, sep = 34, 6
+    ancho = max(sum(f.size[0] for f in fotos) + sep * (len(fotos) + 1)
+                for _, fotos in filas)
+    ancho = max(ancho, 320)
+    alto = sum(barra + alto_foto + sep for _ in filas) + sep
+    hoja = Image.new("RGB", (ancho, alto), (30, 30, 30))
+    dibujo = ImageDraw.Draw(hoja)
+    fuente = _fuente(22)
+    y = sep
+    for etiqueta, fotos in filas:
+        dibujo.rectangle([0, y, ancho, y + barra - 4], fill=(250, 220, 60))
+        dibujo.text((8, y + 3), etiqueta, fill=(0, 0, 0), font=fuente)
+        y += barra
+        x = sep
+        for f in fotos:
+            hoja.paste(f, (x, y))
+            x += f.size[0] + sep
+        y += alto_foto + sep
+    destino = Path(destino)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    hoja.save(destino, "JPEG", quality=85)
+    return destino

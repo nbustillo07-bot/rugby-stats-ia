@@ -241,3 +241,32 @@ def fichas_para_confirmar(db: BaseDatos, partido_id: int, equipo: str) -> list[d
             }
         )
     return salida
+
+
+def candidatos_de(evento: Evento, maximo: int = 3) -> list[dict[str, Any]]:
+    """Los jugadores más probables que propuso el modelo, para elegir con un clic.
+
+    Salen de lo que guardó el re-examen del contacto. Si no hay candidatos
+    pero sí un jugador propuesto, ese es el único.
+    """
+    from .analisis import reglas
+
+    prop = evento.propuesta_original or {}
+    lista = reglas.unir_candidatos(prop.get("candidatos"), maximo=maximo)
+    if not lista and evento.jugador_numero is not None:
+        lista = [{"numero": evento.jugador_numero, "probabilidad": evento.confianza}]
+    return lista[:maximo]
+
+
+def foto_de_cada_jugador(base, partido_id: int, equipo: str) -> dict[int, str]:
+    """La mejor foto recortada de cada jugador (la de más confianza)."""
+    from pathlib import Path
+
+    fotos: dict[int, tuple[float, str]] = {}
+    for f in base.fichas(partido_id, equipo):
+        if not f.imagen or not Path(f.imagen).exists():
+            continue
+        puntaje = f.confianza + (1.0 if f.confirmada else 0.0)
+        if f.jugador_numero not in fotos or puntaje > fotos[f.jugador_numero][0]:
+            fotos[f.jugador_numero] = (puntaje, f.imagen)
+    return {n: r for n, (_, r) in fotos.items()}

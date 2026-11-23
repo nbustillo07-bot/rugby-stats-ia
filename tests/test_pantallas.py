@@ -116,3 +116,41 @@ def test_con_clave_de_claude_muestra_la_plata(pantalla, tmp_path, monkeypatch):
     if pantalla.endswith("4_Analisis.py"):
         assert any("US$" in str(m.value) for m in at.metric)
         assert any(m.value == "US$ 1.25" for m in at.metric)
+
+
+def test_revision_muestra_los_candidatos_con_un_clic(tmp_path, monkeypatch):
+    """Un tackle dudoso trae botones con los candidatos; tocar uno lo resuelve."""
+    from streamlit.testing.v1 import AppTest
+
+    from rugby_stats.db import BaseDatos
+    from rugby_stats.modelos import Equipo, Evento, FuenteVideo, Partido
+    from tests.conftest import hacer_plantel
+
+    ruta_db = tmp_path / "rev.db"
+    base = BaseDatos(ruta_db)
+    pid = base.guardar_partido(Partido(
+        nombre="A vs B",
+        equipo_propio=Equipo(nombre="Club A", kit="rayas", numero_legible="baja"),
+        equipo_rival=Equipo(nombre="Club B", kit="liso"),
+        video=FuenteVideo(tipo="youtube", referencia="https://youtu.be/aaaaaaaaaaa"),
+    ))
+    base.guardar_plantel(pid, hacer_plantel("Club A"))
+    base.guardar_evento(pid, Evento(
+        t_segundos=30, accion="Tackle", equipo="Club A", jugador_numero=None,
+        resultado="positivo", confianza=0.3, pendiente=True,
+        propuesta_original={"candidatos": [{"numero": 4, "probabilidad": 0.6},
+                                           {"numero": 7, "probabilidad": 0.3}]},
+    ))
+    base.cerrar()
+    monkeypatch.setenv("RUGBY_STATS_DB", str(ruta_db))
+    monkeypatch.chdir(RAIZ)
+    at = AppTest.from_file(str(RAIZ / "pages/5_Revision.py"), default_timeout=90)
+    at.session_state["partido_id"] = 1
+    at.run()
+    assert not at.exception
+    botones = [b for b in at.button if b.key and b.key.startswith("cand_")]
+    assert len(botones) == 2
+    botones[0].click().run()
+    assert not at.exception
+    e = BaseDatos(ruta_db).eventos(1)[0]
+    assert e.jugador_numero == 4 and e.revisado and not e.pendiente

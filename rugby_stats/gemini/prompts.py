@@ -314,9 +314,22 @@ def prompt_eventos(
     fin_s: float,
     relato: str = "",
     solo_propio: bool = False,
+    solo_tackles: bool = False,
 ) -> str:
     bloque_foco = ""
-    if solo_propio:
+    if solo_tackles:
+        bloque_foco = f"""
+FOCO: SOLO TACKLES de {propio.nombre} (el equipo "propio"). No devuelvas \
+pases, patadas, rucks, lines ni ninguna otra acción. Devolvé cada contacto en \
+el que uno o más jugadores de {propio.nombre} intentan tacklear a un portador \
+rival: como "Tackle" (equipo "propio") si lo bajan o lo frenan, o "Tackle \
+errado" si se les escapa. Ponés el número solo si estás seguro; si no, null.
+
+Lo que más importa es NO PERDERTE NINGUNO: ante la duda, listalo. Cada uno se \
+vuelve a mirar después con zoom y en detalle, y ahí se descartan los que no \
+eran. Uno que no listás acá, en cambio, se pierde para siempre.
+"""
+    elif solo_propio:
         bloque_foco = f"""
 FOCO: solo interesa {propio.nombre} (el equipo "propio"). Del rival devolvé \
 ÚNICAMENTE sus carries, sin número (dejalo en null): hacen falta porque cada \
@@ -397,6 +410,22 @@ ESQUEMA_CONTACTO = {
         "hubo_infraccion": {"type": "string"},
         "confianza": {"type": "number"},
         "confianza_identificacion": {"type": "number"},
+        # Si de verdad hubo un tackle del equipo propio (para descartar los
+        # falsos positivos de la pasada rápida).
+        "hay_tackle_propio": {"type": "boolean"},
+        # Los más probables para el primer tackleador propio, de más a menos.
+        "candidatos": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "numero": {"type": "integer"},
+                    "probabilidad": {"type": "number"},
+                    "por_que": {"type": "string"},
+                },
+                "required": ["numero", "probabilidad"],
+            },
+        },
         "nota": {"type": "string"},
     },
     "required": ["avance_portador", "tackleadores", "confianza"],
@@ -413,8 +442,24 @@ def prompt_contacto(
     fin_s: float,
     pista: str = "",
     solo_propio: bool = False,
+    en_cancha: list[int] | None = None,
+    t_contacto: float | None = None,
 ) -> str:
     bloque_pista = f"\nLo que se detectó a menor velocidad: {pista}\n" if pista else ""
+    if t_contacto is not None:
+        bloque_pista += (
+            f"\nEl contacto es alrededor del segundo {t_contacto:.1f}. Se te "
+            "muestran también los segundos de DESPUÉS a propósito: cuando el "
+            "tackleador se levanta, se da vuelta y vuelve a la línea, muchas "
+            "veces se le ve el número en la espalda. Seguilo con la vista hasta "
+            "el final de los cuadros.\n"
+        )
+    if en_cancha:
+        bloque_pista += (
+            "\nJugadores propios EN CANCHA en este momento (según los cambios "
+            f"detectados): {', '.join(str(n) for n in sorted(en_cancha))}. Un "
+            "número que no esté en esta lista no puede ser el tackleador.\n"
+        )
     if solo_propio:
         bloque_pista += f"""
 FOCO: solo hace falta identificar a los jugadores de {propio.nombre} (el \
@@ -465,9 +510,67 @@ Pueden ser distintas: podés ver clarísimo que hubo un tackle que frenó al \
 portador (confianza 0.95) y no tener idea de quién lo hizo \
 (confianza_identificacion 0.2).
 
-El número de la espalda casi nunca se ve en el contacto. Reconocé por los \
-rasgos de las fichas: casco, vincha, vendas, color de botines, contextura. \
-Si dos jugadores de la ficha podrían ser el que viste, dejalo afuera."""
+10. "hay_tackle_propio": false si en realidad no hubo un tackle (ni un \
+intento) de un jugador propio: por ejemplo, era un ruck, un pase, o el que \
+tacklea es del rival.
+11. "candidatos": para el PRIMER tackleador propio, los hasta 3 números más \
+probables, del más al menos probable, con "probabilidad" (que sumen 1 o \
+menos) y en "por_que" qué te hizo pensarlo (casco, botines, número visto en \
+el segundo tal). Aunque no estés seguro, dá los candidatos: una persona va a \
+elegir entre ellos. En "tackleadores" poné solo los que estés seguro.
+
+El número de la espalda casi nunca se ve en el contacto. Reconocé por las \
+fotos y los rasgos de las fichas: casco, vincha, vendas, color de botines, \
+contextura. Si dos jugadores podrían ser el que viste, dejalo afuera de \
+"tackleadores" y ponelos a los dos en "candidatos"."""
+
+
+ESQUEMA_LOCALIZAR = {
+    "type": "object",
+    "properties": {
+        "puntos": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "t_segundos": {"type": "number"},
+                    "caja": {"type": "array", "items": {"type": "number"}},
+                },
+                "required": ["t_segundos", "caja"],
+            },
+        },
+        "se_ve_el_contacto": {"type": "boolean"},
+    },
+    "required": ["puntos"],
+}
+
+
+def prompt_localizar(
+    propio: Equipo, rival: Equipo, t_contacto: float, inicio_s: float, fin_s: float,
+    pista: str = "",
+) -> str:
+    return f"""{ENCABEZADO}
+
+{describir_equipos(propio, rival)}
+{_tiempos(inicio_s, fin_s)}
+
+Alrededor del segundo {t_contacto:.1f} hay un contacto (un tackle).{(" " + pista) if pista else ""}
+
+TAREA: no hace falta reconocer a nadie. Solo decí DÓNDE está la acción en \
+cada cuadro, para después recortar esa zona y ampliarla.
+
+En "puntos", para cada cuadro, "t_segundos" (el que va al lado del cuadro) y \
+"caja" = [x1, y1, x2, y2] en coordenadas relativas de 0 a 1 (0,0 arriba a la \
+izquierda; 1,1 abajo a la derecha):
+- antes del contacto: la caja que encierra al portador y a los defensores \
+que van a tacklearlo;
+- en el contacto: la caja del choque, con todos los que participan;
+- después: la de los tackleadores mientras se levantan y vuelven a la línea \
+(es cuando se les puede ver el número).
+
+La caja tiene que ser justa pero no cortar a nadie. Si en algún cuadro no se \
+ve, salteá ese cuadro. "se_ve_el_contacto": false si en estos cuadros no hay \
+ningún contacto."""
 
 
 # ---------------------------------------------------------------------------

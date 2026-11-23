@@ -22,6 +22,11 @@ claude:
       - claude-sonnet-5-5
     liviano:
       - claude-haiku-5-5
+    # Segunda opinión: cuando el fuerte duda de QUIÉN tackleó, se le vuelve a
+    # preguntar a este. Si coinciden, sube la confianza; si no, va a revisión
+    # con los dos candidatos. Borralo para no usarlo.
+    experto:
+      - claude-opus-5-5
   # Cuánto "piensa" el modelo antes de contestar. Lo que piensa se cobra como
   # salida, así que para extraer datos alcanza con "low". Valores: low,
   # medium, high, xhigh, max.
@@ -47,8 +52,30 @@ claude:
   velocidades:
     gruesa:   {fps: 0.2, ventana_s: 300, ancho: 448}
     juego:    {fps: 2.0, ventana_s: 30,  ancho: 640}
-    contacto: {fps: 6.0, ventana_s: 3.0, ancho: 1008, margen_antes_s: 1.5, margen_despues_s: 1.5}
+    # En el contacto se mira 1,5 s antes y 6 s DESPUÉS: el número aparece
+    # cuando el tackleador se levanta y vuelve a la línea. Con zoom, "ancho"
+    # es el del recorte ampliado.
+    contacto: {fps: 3.0, ventana_s: 1.0, ancho: 672, margen_antes_s: 1.5, margen_despues_s: 6.0}
     fichas:   {fps: 1.0, ventana_s: 40,  ancho: 1008}
+    # Para ubicar dónde está el contacto en cada momento (antes del zoom).
+    localizar: {fps: 2.0, ventana_s: 1.0, ancho: 640}
+  # ZOOM AL CONTACTO. Primero el liviano marca dónde está el contacto en cada
+  # cuadro; después al fuerte se le mandan esos cuadros recortados y
+  # ampliados, sacados del video en alta. activo: false = cancha entera.
+  zoom:
+    activo: true
+    ancho_fuente: 1920   # de qué tamaño se saca el cuadro antes de recortar
+    escala: 2.2          # cuánto más grande que la caja del contacto
+    minimo: 0.3          # el recorte nunca es menos que esto del ancho
+    contexto_fps: 1.0    # cuadros de la cancha entera que se suman, por segundo
+    contexto_ancho: 512
+  # Fotos por jugador que se juntan como referencia (en momentos distintos),
+  # y cuántas ventanas de video se miran como mucho para juntarlas.
+  fotos_por_jugador: 3
+  max_ventanas_fichas: 10
+  # Si la confianza en QUIÉN tackleó queda por debajo de esto, se pide la
+  # segunda opinión al modelo "experto".
+  umbral_segunda_opinion: 0.6
 
 # ---------------------------------------------------------------------------
 #
@@ -117,6 +144,11 @@ analisis:
   #          menos pedidos y deja mucho menos para revisar.
   # false -> se registran las acciones de los dos equipos.
   solo_equipo_propio: true
+  # Qué acciones se miden. "tackles" -> solo tackles (y tackles errados) del
+  # equipo propio: TODOS los contactos se re-examinan a alta velocidad, con
+  # zoom, y lo demás (pases, rucks, patadas) no se mira, así la plata va a lo
+  # que importa. "todo" -> todas las acciones.
+  medir: tackles
 
 # Las tres velocidades. fps = cuadros por segundo que se le mandan al modelo.
 # Gemini acepta de 0 (exclusivo) a 24. resolucion LOW ≈ 100 tokens por segundo
@@ -201,7 +233,7 @@ video:
   descargar_si_dura_mas_de_s: 0
   # Calidad con la que se baja el video para Claude (alto en píxeles). 720
   # alcanza para leer números; más es más lento de bajar sin ganar mucho.
-  calidad_descarga: 720
+  calidad_descarga: 1080
   # Carpeta donde se guardan los videos bajados y los clips cortados.
   dir_trabajo: data/video
   # Largo del clip que se muestra en la cola de revisión.

@@ -498,14 +498,36 @@ El trabajo se reparte en dos modelos (`claude.modelos` en `config.yaml`):
   fichas (y recortar una foto de cada jugador) y resolver cada contacto con
   esas fotos al lado.
 
+### Modo solo tackles (el que viene puesto)
+
+`analisis.medir: tackles` en `config.yaml`. Se miden solo los tackles del
+equipo propio, y la plata va toda a resolver **quién** tackleó:
+
+1. **Se re-examinan todos los contactos**, no solo los dudosos. La pasada
+   rápida lista "por las dudas"; el re-examen borra los que no eran.
+2. **Zoom al contacto.** Haiku marca dónde está el choque en cada cuadro, y a
+   Sonnet se le manda esa zona recortada del video en 1080p y ampliada, más
+   unos pocos cuadros de la cancha entera para ubicarse.
+3. **6 segundos después del contacto.** Cuando el tackleador se levanta y
+   vuelve a la línea se le suele ver el número.
+4. **Tres fotos por jugador**, de momentos distintos, juntadas por la IA sola
+   (sin confirmar nada a mano) en hojas de 4 jugadores.
+5. **Lógica del juego.** Con los cambios detectados, nadie que no esté en
+   cancha puede tacklear; y nadie hace dos tackles en lugares distintos casi
+   al mismo tiempo. Lo que no cierra va a revisión.
+6. **Segunda opinión.** Si Sonnet duda de quién fue, se le pregunta a Opus.
+   Si coinciden, sube la confianza; si no, queda pendiente.
+7. **Revisión con un clic.** Cada tackle dudoso muestra los 3 candidatos más
+   probables con su foto: tocás al que es.
+
 Estimación (a confirmar con `6_prueba_real.bat`):
 
-| | Sonnet + Haiku | Todo Sonnet |
+| | Con segunda opinión (Opus) | Sin segunda opinión |
 |---|---|---|
-| Tramo de 6 minutos | ~US$ 0,90 | — |
-| Partido entero (80 min) | **~US$ 5** | ~US$ 10 |
+| Tramo de 6 minutos | ~US$ 1 | ~US$ 0,80 |
+| Partido entero (80 min) | **~US$ 6,70** | ~US$ 4,80 |
 
-La mayor parte (~US$ 4,30) es el re-examen de contactos con Sonnet.
+Para sacar la segunda opinión, borrá `experto` en `claude.modelos`.
 
 **Tope de gasto.** `claude.tope_usd_por_partido` (10 por defecto). Antes de
 cada pedido se calcula lo que puede costar y, si se pasaría del tope, el

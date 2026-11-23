@@ -135,6 +135,13 @@ def main() -> int:
 
     eventos = base.eventos(pid)
     fichas = base.fichas(pid)
+    tackles = [e for e in eventos if e.accion in ("Tackle", "Tackle errado")]
+    con_jugador = [e for e in tackles if e.jugador_numero is not None and not e.pendiente]
+    opiniones = [
+        e.propuesta_original.get("coinciden")
+        for e in tackles
+        if e.propuesta_original and "coinciden" in e.propuesta_original
+    ]
     resumen = {
         "cuando": datetime.now().isoformat(timespec="seconds"),
         "partido": partido.nombre,
@@ -151,6 +158,10 @@ def main() -> int:
         "partido_entero_proyectado_usd": round(proyectado, 2),
         "eventos": len(eventos),
         "eventos_pendientes": len([e for e in eventos if e.pendiente]),
+        "tackles": len(tackles),
+        "tackles_con_jugador_sin_dudas": len(con_jugador),
+        "segundas_opiniones": len(opiniones),
+        "segundas_opiniones_que_coinciden": sum(1 for o in opiniones if o),
         "fichas": len(fichas),
         "fichas_con_imagen": len([f for f in fichas if f.imagen]),
         "tramos": len(base.tramos(pid)),
@@ -194,6 +205,10 @@ def main() -> int:
         f"Partido entero, proyectado con lo medido: US$ {proyectado:.2f}",
         f"Tope por partido en config.yaml: US$ {cfg.tope_usd_por_partido:.2f}",
         "",
+        f"Tackles      : {len(tackles)} encontrados; {len(con_jugador)} con jugador y sin dudas, "
+        f"{len(tackles) - len(con_jugador)} a revisar"
+        + (f"; segunda opinión en {len(opiniones)} (coincidió en {sum(1 for o in opiniones if o)})"
+           if opiniones else ""),
         f"Encontró     : {len(eventos)} eventos ({resumen['eventos_pendientes']} pendientes), "
         f"{len(fichas)} fichas ({resumen['fichas_con_imagen']} con foto), "
         f"{resumen['relato']} fragmentos de relato",

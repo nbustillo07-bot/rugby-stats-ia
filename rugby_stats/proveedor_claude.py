@@ -265,10 +265,44 @@ class ClienteClaude:
                 "estar bajado: volvé a correr el análisis y se baja solo."
             )
         ancho = int(getattr(p, "ancho", 0) or 0) or ANCHO_POR_RESOLUCION.get(p.resolucion, 640)
-        return cuadros_mod.extraer(
-            ruta, float(p.inicio_s), float(p.fin_s), float(p.fps or 1.0), ancho,
-            self.dir_cuadros, self._desfases.get(str(ruta), 0.0), self.max_cuadros,
+        desfase = self._desfases.get(str(ruta), 0.0)
+        zoom = getattr(p, "zoom", None) or {}
+        pista = []
+        for punto in zoom.get("pista") or []:
+            try:
+                t, caja = float(punto[0]), cuadros_mod.caja_valida(punto[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if caja:
+                pista.append((t, caja))
+        if not pista:
+            return cuadros_mod.extraer(
+                ruta, float(p.inicio_s), float(p.fin_s), float(p.fps or 1.0), ancho,
+                self.dir_cuadros, desfase, self.max_cuadros,
+            )
+        # Zoom: unos pocos cuadros de la vista general para el contexto, y el
+        # resto recortados alrededor del contacto.
+        ctx_fps = float(zoom.get("contexto_fps") or 0)
+        generales: list[cuadros_mod.Cuadro] = []
+        if ctx_fps > 0:
+            generales = cuadros_mod.extraer(
+                ruta, float(p.inicio_s), float(p.fin_s), ctx_fps,
+                int(zoom.get("contexto_ancho") or 512), self.dir_cuadros, desfase,
+                max(1, self.max_cuadros // 6),
+            )
+        cupo = max(1, self.max_cuadros - len(generales))
+        ampliados = cuadros_mod.extraer_zoom(
+            ruta, float(p.inicio_s), float(p.fin_s), float(p.fps or 1.0), pista, ancho,
+            self.dir_cuadros, desfase, cupo,
+            ancho_fuente=int(zoom.get("ancho_fuente") or 1920),
+            escala=float(zoom.get("escala") or 2.2),
+            minimo=float(zoom.get("minimo") or 0.3),
         )
+        for c in generales:
+            c.tipo = "vista general"  # type: ignore[attr-defined]
+        for c in ampliados:
+            c.tipo = "zoom al contacto"  # type: ignore[attr-defined]
+        return sorted(generales + ampliados, key=lambda c: (c.t, getattr(c, "tipo", "")))
 
     def _contenido(self, p: Pedido, lista: list[cuadros_mod.Cuadro]) -> tuple[list[dict], int]:
         """Arma los bloques del mensaje y estima los tokens de entrada."""
@@ -303,8 +337,16 @@ class ClienteClaude:
                     "números para los tiempos de tu respuesta."
                 ),
             })
+            if any(getattr(c, "tipo", "") for c in lista):
+                bloques[-1]["text"] += (
+                    " Hay dos clases: 'vista general' es la cancha entera, para "
+                    "ubicarte; 'zoom al contacto' es la misma escena recortada y "
+                    "ampliada alrededor del contacto, para reconocer a los "
+                    "jugadores."
+                )
             for c in lista:
-                bloques.append({"type": "text", "text": f"t={c.t:.1f} s"})
+                tipo = getattr(c, "tipo", "")
+                bloques.append({"type": "text", "text": f"t={c.t:.1f} s" + (f" · {tipo}" if tipo else "")})
                 bloques.append(_bloque_imagen(c.ruta))
                 tokens += c.tokens + 8
         texto = p.prompt

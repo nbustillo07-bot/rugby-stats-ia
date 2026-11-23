@@ -307,3 +307,60 @@ def limpiar_numero(valor: Any) -> int | None:
         return None  # 9.5 no es un número de camiseta
     n = int(f)
     return n if 1 <= n <= 99 else None
+
+
+def en_cancha(jugadores: list[Jugador], minuto: float) -> list[int] | None:
+    """Los números que están en cancha en ese minuto del partido.
+
+    Solo se sabe si se detectó algún cambio; si no hay ninguno anotado,
+    devuelve None (no se restringe nada: puede haber cambios que no se vieron).
+    """
+    if not any(j.entro_min is not None or j.salio_min is not None for j in jugadores):
+        return None
+    salida = []
+    for j in jugadores:
+        desde = j.entro_min if j.entro_min is not None else (0.0 if j.titular else None)
+        if desde is None or minuto < desde - 0.5:
+            continue
+        if j.salio_min is not None and minuto > j.salio_min + 0.5:
+            continue
+        salida.append(j.numero)
+    return salida
+
+
+def unir_candidatos(*listas: Any, maximo: int = 3) -> list[dict[str, Any]]:
+    """Junta las listas de candidatos de varias respuestas, sin repetir.
+
+    Cada lista puede traer dicts ``{"numero", "probabilidad"}`` o números
+    sueltos (los "tackleadores" de una respuesta, que cuentan como seguros).
+    La probabilidad final es el promedio entre respuestas.
+    """
+    suma: dict[int, float] = {}
+    motivos: dict[int, str] = {}
+    n = 0
+    for lista in listas:
+        if not lista:
+            continue
+        n += 1
+        vistos: set[int] = set()
+        for item in lista:
+            if isinstance(item, dict):
+                num = limpiar_numero(item.get("numero"))
+                prob = normalizar_confianza(item.get("probabilidad"))
+                motivo = str(item.get("por_que") or "")
+            else:
+                num, prob, motivo = limpiar_numero(item), 0.6, ""
+            if num is None or num in vistos:
+                continue
+            vistos.add(num)
+            suma[num] = suma.get(num, 0.0) + prob
+            if motivo and num not in motivos:
+                motivos[num] = motivo
+    if not suma:
+        return []
+    orden = sorted(suma.items(), key=lambda kv: -kv[1])[:maximo]
+    return [
+        {"numero": num, "probabilidad": round(s / max(1, n), 3),
+         **({"por_que": motivos[num]} if num in motivos else {})}
+        for num, s in orden
+    ]

@@ -7,6 +7,8 @@ pueda cortar y retomar.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -69,24 +71,77 @@ def _json(respuesta: Any, etiqueta: str) -> Any:
 
 
 def referencias_visuales(
-    fichas: dict[int, Ficha], jugadores: list[Jugador], maximo: int = 23
+    fichas: dict[int, Ficha],
+    jugadores: list[Jugador],
+    maximo: int = 23,
+    fotos: list[Ficha] | None = None,
+    por_jugador: int = 1,
+    carpeta: Path | None = None,
+    por_hoja: int = 4,
 ) -> list[tuple[str, str]]:
-    """Las fichas que tienen imagen, como (etiqueta, ruta), para el modelo.
+    """Las fotos de cada jugador, como (etiqueta, ruta), para el modelo.
 
-    Primero las confirmadas por una persona, después las de más confianza.
+    Con ``por_jugador`` = 1 va una foto por jugador: primero las confirmadas
+    por una persona, después las de más confianza.
+
+    Con más de una (y una ``carpeta`` donde armar las hojas) se eligen hasta
+    ``por_jugador`` fotos de momentos distintos de cada uno —el mismo jugador
+    visto de frente, de espalda y de costado se reconoce mucho mejor— y se
+    juntan de a ``por_hoja`` jugadores por imagen, con el nombre escrito
+    arriba de cada fila, para no pasar el límite de imágenes por pedido.
     """
     por_numero = {j.numero: j for j in jugadores}
-    con_imagen = [
-        f for f in fichas.values() if f.imagen and Path(f.imagen).exists()
-    ]
-    con_imagen.sort(key=lambda f: (not f.confirmada, -f.confianza, f.jugador_numero))
-    salida: list[tuple[str, str]] = []
-    for f in con_imagen[:maximo]:
-        j = por_numero.get(f.jugador_numero)
-        etiqueta = j.etiqueta if j else str(f.jugador_numero)
-        salida.append((etiqueta, str(f.imagen)))
-    salida.sort(key=lambda r: r[0])
+    todas = list(fotos) if fotos else list(fichas.values())
+    con_imagen = [f for f in todas if f.imagen and Path(f.imagen).exists()]
+    con_imagen.sort(key=lambda f: (not f.confirmada, -f.confianza, f.t_segundos))
+
+    elegidas: dict[int, list[Ficha]] = {}
+    for f in con_imagen:
+        lista = elegidas.setdefault(f.jugador_numero, [])
+        if len(lista) >= max(1, por_jugador):
+            continue
+        # Momentos distintos: dos fotos del mismo segundo no suman nada.
+        if any(abs(f.t_segundos - o.t_segundos) < 15 for o in lista):
+            continue
+        lista.append(f)
+    numeros = sorted(elegidas, key=lambda n: n)[:maximo]
+
+    def etiqueta(n: int) -> str:
+        j = por_numero.get(n)
+        return j.etiqueta if j else str(n)
+
+    if por_jugador <= 1 or carpeta is None:
+        salida = [(etiqueta(n), str(elegidas[n][0].imagen)) for n in numeros]
+        salida.sort(key=lambda r: r[0])
+        return salida
+
+    from .. import cuadros as cuadros_mod
+
+    salida = []
+    for k in range(0, len(numeros), por_hoja):
+        grupo = numeros[k:k + por_hoja]
+        filas = [(etiqueta(n), [Path(f.imagen) for f in elegidas[n]]) for n in grupo]
+        firma = hashlib.sha256(
+            json.dumps([[e, [str(r) for r in rs]] for e, rs in filas]).encode()
+        ).hexdigest()[:16]
+        destino = Path(carpeta) / f"hoja_{firma}.jpg"
+        if not destino.exists():
+            try:
+                cuadros_mod.hoja_referencias(filas, destino)
+            except Exception as exc:  # noqa: BLE001 - sin hoja se sigue igual
+                log.warning("No pude armar la hoja de fotos: %s", exc)
+                continue
+        if destino.exists():
+            salida.append((" · ".join(etiqueta(n) for n in grupo), str(destino)))
     return salida
+
+
+def _referencias(partido: Partido, fichas, jugadores, cfg: Config, fotos=None):
+    """Las referencias que van en los pedidos de eventos y contactos."""
+    return referencias_visuales(
+        fichas, jugadores, fotos=fotos, por_jugador=cfg.fotos_por_jugador,
+        carpeta=cfg.dir_video.parent / "fichas" / "hojas",
+    )
 
 
 def recortar_ficha(
@@ -258,6 +313,7 @@ def pasada_fichas(
     tramos_muertos: list[Tramo] | None = None,
     fichas_previas: dict[int, Ficha] | None = None,
     progreso=None,
+    fotos_previas: list[Ficha] | None = None,
 ) -> list[Ficha]:
     """Arma las fichas de apariencia leyendo el número en la espalda.
 
@@ -286,11 +342,30 @@ def pasada_fichas(
     rangos = [(a, b) for a, b in rangos if b > a]
     objetivo = {j.numero for j in jugadores}
     fichas: list[Ficha] = []
+    # Con Claude se juntan varias fotos de cada jugador, de momentos
+    # distintos. Con Gemini (que no recibe fotos) alcanza con una ficha.
+    con_fotos = bool(getattr(cliente, "necesita_video_local", False))
+    por_jugador = cfg.fotos_por_jugador if con_fotos else 1
+    tope_ventanas = int(cfg.get("claude.max_ventanas_fichas", 10) or 10) if con_fotos else len(rangos)
+    momentos: dict[int, list[float]] = {}
+    for f in list(fotos_previas or []) + list(previas.values()):
+        if not con_fotos or (f.imagen and Path(f.imagen).exists()):
+            momentos.setdefault(f.jugador_numero, []).append(f.t_segundos)
 
+    def cuantas(n: int) -> int:
+        ts = sorted(set(momentos.get(n, [])))
+        distintas: list[float] = []
+        for x in ts:
+            if all(abs(x - y) >= 15 for y in distintas):
+                distintas.append(x)
+        return len(distintas)
+
+    rangos = rangos[:tope_ventanas]
     for i, (ini, fin) in enumerate(rangos, 1):
-        faltantes = sorted(objetivo - set(previas))
+        faltantes = sorted(n for n in objetivo if cuantas(n) < por_jugador)
         if not faltantes:
-            log.info("Ya tengo ficha de los %d jugadores. Corto.", len(objetivo))
+            log.info("Ya tengo %d foto(s) de los %d jugadores. Corto.",
+                     por_jugador, len(objetivo))
             break
         if progreso:
             progreso(
@@ -343,6 +418,8 @@ def pasada_fichas(
             )
             ficha.imagen = recortar_ficha(partido, ficha, d.get("caja"), cfg)
             fichas.append(ficha)
+            if not con_fotos or ficha.imagen:
+                momentos.setdefault(numero, []).append(ficha.t_segundos)
             anterior = previas.get(numero)
             if anterior is None or ficha.confianza >= anterior.confianza:
                 previas[numero] = ficha
@@ -365,6 +442,7 @@ def pasada_eventos(
     tramos_juego: list[Tramo] | None = None,
     transcripcion: list[dict[str, Any]] | None = None,
     progreso=None,
+    fotos: list[Ficha] | None = None,
 ) -> tuple[list[Evento], list[dict[str, Any]]]:
     """Detecta eventos a velocidad media.
 
@@ -389,7 +467,8 @@ def pasada_eventos(
     a_revisar: list[dict[str, Any]] = []
     propio = partido.equipo_propio.nombre
     rival = partido.equipo_rival.nombre
-    referencias = referencias_visuales(fichas, jugadores_propios)
+    referencias = _referencias(partido, fichas, jugadores_propios, cfg, fotos)
+    solo_tackles = cfg.solo_tackles
 
     for i, (ini, fin) in enumerate(rangos, 1):
         if progreso:
@@ -407,6 +486,7 @@ def pasada_eventos(
                     fin,
                     relato,
                     solo_propio=cfg.solo_equipo_propio,
+                    solo_tackles=solo_tackles,
                 ),
                 video_uri=_uri(partido),
                 inicio_s=ini,
@@ -444,8 +524,12 @@ def pasada_eventos(
                         }
                     )
                 continue
+            if solo_tackles and e.accion not in ("Tackle", "Tackle errado"):
+                continue
             eventos.append(e)
-            if _es_contacto_dudoso(e, cfg) or (
+            # En modo tackles se re-examinan TODOS: es lo único que se mide y
+            # el re-examen con zoom es donde se decide quién fue.
+            if (solo_tackles and e.accion in ACCIONES_DE_CONTACTO) or _es_contacto_dudoso(e, cfg) or (
                 d.get("revisar_contacto") and e.accion in ACCIONES_DE_CONTACTO
             ):
                 a_revisar.append(
@@ -594,36 +678,60 @@ def revisar_contactos(
     cfg: Config,
     a_revisar: list[dict[str, Any]],
     progreso=None,
+    fotos: list[Ficha] | None = None,
 ) -> list[dict[str, Any]]:
-    """Vuelve a mirar cada contacto dudoso con muchos más cuadros por segundo.
+    """Vuelve a mirar cada contacto con muchos más cuadros por segundo.
 
     Acá se resuelve quién tackleó y si el portador avanzó, que son los dos
     datos que a 2 cuadros por segundo no salen. El criterio de positivo o
     negativo lo aplica ``reglas.clasificar_tackle`` sobre la observación.
 
+    Con Claude, cada contacto se mira así:
+
+    1. El modelo liviano marca DÓNDE está el contacto en cada cuadro.
+    2. Al fuerte se le manda esa zona recortada y ampliada (sacada del video
+       en alta), desde 1,5 s antes hasta 6 s después: cuando el tackleador se
+       levanta y vuelve a la línea se le suele ver el número.
+    3. Si el fuerte duda de quién fue, se le pregunta al experto. Si
+       coinciden, sube la confianza; si no, va a revisión con los candidatos
+       de los dos.
+
+    Después se aplica la lógica del juego: nadie tacklea si no está en
+    cancha, y nadie hace dos tackles en lugares distintos en el mismo segundo.
+
     Devuelve un contacto por elemento: ``{"t_segundos", "desde_s", "hasta_s",
-    "eventos"}``. Quien llama decide cómo se combinan con lo que ya había.
+    "eventos", "descartado"}``. Quien llama decide cómo se combinan con lo que
+    ya había.
     """
     v = cfg.velocidad("contacto")
     a_revisar = agrupar_contactos(a_revisar)
     resueltos: list[dict[str, Any]] = []
-    referencias = referencias_visuales(fichas, jugadores_propios)
-    propio = partido.equipo_propio.nombre
-    rival = partido.equipo_rival.nombre
+    referencias = _referencias(partido, fichas, jugadores_propios, cfg, fotos)
     numeros_propios = reglas.numeros_del_plantel(jugadores_propios)
     numeros_rivales = reglas.numeros_del_plantel(jugadores_rivales)
+    local = bool(getattr(cliente, "necesita_video_local", False))
+    zoom_cfg = cfg.zoom_contacto if local else {}
+    niveles = getattr(cliente, "niveles", None) or {}
+    hay_experto = local and "experto" in niveles
+    umbral_experto = float(cfg.get("claude.umbral_segunda_opinion", 0.6) or 0.6)
 
     for i, item in enumerate(a_revisar, 1):
         t = float(item["t_segundos"])
         ini = max(0.0, t - v.margen_antes_s)
         fin = t + v.margen_despues_s + v.ventana_s / 2
+        pista_txt = str(item.get("pista") or "")
         if progreso:
             progreso(f"Contactos {i}/{len(a_revisar)}", i / max(1, len(a_revisar)))
+        minuto = (t + (partido.video.desfase_s or 0.0)) / 60
+        en_cancha = reglas.en_cancha(jugadores_propios, minuto)
 
-        intentos = 0
-        datos: dict[str, Any] = {}
-        fps = v.fps
-        while intentos <= cfg.reintentos_sin_clasificar:
+        zoom = None
+        if zoom_cfg:
+            pista = _localizar(cliente, partido, cfg, t, ini, fin, pista_txt)
+            if pista:
+                zoom = {**zoom_cfg, "pista": pista}
+
+        def pedir_contacto(ini_: float, fin_: float, fps_: float, nivel: str, etiqueta: str):
             r = cliente.pedir(
                 Pedido(
                     prompt=prompts.prompt_contacto(
@@ -632,49 +740,199 @@ def revisar_contactos(
                         jugadores_propios,
                         jugadores_rivales,
                         fichas,
-                        ini,
-                        fin,
-                        str(item.get("pista") or ""),
+                        ini_,
+                        fin_,
+                        pista_txt,
                         solo_propio=cfg.solo_equipo_propio,
+                        en_cancha=en_cancha,
+                        t_contacto=t,
                     ),
                     video_uri=_uri(partido),
-                    inicio_s=ini,
-                    fin_s=fin,
-                    fps=min(24.0, fps),
+                    inicio_s=ini_,
+                    fin_s=fin_,
+                    fps=min(24.0, fps_),
                     resolucion=v.resolucion,
                     esquema=prompts.ESQUEMA_CONTACTO,
-                    etiqueta=f"contacto {t:.1f} intento {intentos}",
-                ancho=v.ancho,
-                referencias=referencias,
-                nivel=cfg.nivel_de("contactos"),
+                    etiqueta=etiqueta,
+                    ancho=v.ancho,
+                    referencias=referencias,
+                    nivel=nivel,
+                    zoom=zoom,
                 )
             )
-            leido = _json(r, f"contacto {t:.1f}")
-            datos = leido if isinstance(leido, dict) else {}
+            leido = _json(r, etiqueta)
+            return leido if isinstance(leido, dict) else {}
+
+        intentos = 0
+        datos: dict[str, Any] = {}
+        fps = v.fps
+        # Con zoom no se repite con más cuadros: para eso está la segunda
+        # opinión, que sale más a cuenta.
+        maximo_intentos = 0 if zoom else cfg.reintentos_sin_clasificar
+        while True:
+            datos = pedir_contacto(ini, fin, fps, cfg.nivel_de("contactos"),
+                                   f"contacto {t:.1f} intento {intentos}")
             # "Sin clasificar no vale": si no salió ni el tackleador ni el
             # avance, se amplía la ventana y se suben los cuadros por segundo.
             falta = not datos.get("tackleadores") or datos.get(
                 "avance_portador"
             ) in (None, "", "no_se_ve")
-            if not falta:
+            if not falta or intentos >= maximo_intentos:
                 break
             intentos += 1
             ini = max(0.0, ini - 1.0)
             fin = fin + 1.0
             fps = min(24.0, fps * 1.5)
 
+        if hay_experto and datos.get("hay_tackle_propio", True) is not False and (
+            reglas.normalizar_confianza(datos.get("confianza_identificacion", datos.get("confianza")))
+            < umbral_experto
+            or not datos.get("tackleadores")
+        ):
+            otra = pedir_contacto(ini, fin, fps, "experto", f"contacto {t:.1f} experto")
+            if otra:
+                datos = _juntar_opiniones(datos, otra)
+
+        datos["candidatos"] = reglas.unir_candidatos(datos.get("candidatos"), datos.get("tackleadores"))
+        if en_cancha is not None:
+            datos["en_cancha"] = en_cancha
+        descartado = (
+            cfg.solo_tackles
+            and datos.get("hay_tackle_propio") is False
+            and reglas.normalizar_confianza(datos.get("confianza")) >= 0.6
+        )
+        eventos = [] if descartado else _contacto_a_eventos(
+            datos, t, partido, cfg, numeros_propios, numeros_rivales
+        )
+        if datos.get("coinciden") is False:
+            # Las dos miradas no coinciden: no se cuenta hasta que una persona
+            # elija entre los candidatos.
+            for e in eventos:
+                if e.accion in ("Tackle", "Tackle errado"):
+                    e.pendiente = True
+        if en_cancha is not None:
+            for e in eventos:
+                if e.equipo == partido.equipo_propio.nombre and e.jugador_numero is not None \
+                        and e.jugador_numero not in en_cancha:
+                    e.pendiente = True
+                    e.nota = (e.nota + f" | el {e.jugador_numero} no estaba en cancha").strip(" |")
         resueltos.append(
             {
                 "t_segundos": t,
                 "desde_s": float(item.get("desde_s", t)),
                 "hasta_s": float(item.get("hasta_s", t)),
-                "eventos": _contacto_a_eventos(
-                    datos, t, partido, cfg, numeros_propios, numeros_rivales
-                ),
+                "eventos": eventos,
+                "descartado": descartado,
             }
         )
 
+    _marcar_imposibles(resueltos, partido.equipo_propio.nombre)
     return resueltos
+
+
+def _localizar(
+    cliente: Any, partido: Partido, cfg: Config, t: float, ini: float, fin: float,
+    pista_txt: str,
+) -> list[list[Any]]:
+    """Le pide al liviano dónde está el contacto en cada cuadro."""
+    try:
+        vl = cfg.velocidad("localizar")
+    except KeyError:
+        return []
+    r = cliente.pedir(
+        Pedido(
+            prompt=prompts.prompt_localizar(
+                partido.equipo_propio, partido.equipo_rival, t, ini, fin, pista_txt
+            ),
+            video_uri=_uri(partido),
+            inicio_s=ini,
+            fin_s=fin,
+            fps=vl.fps,
+            esquema=prompts.ESQUEMA_LOCALIZAR,
+            etiqueta=f"ubicar contacto {t:.1f}",
+            ancho=vl.ancho,
+            nivel="liviano",
+        )
+    )
+    datos = _json(r, f"ubicar {t:.1f}")
+    if not isinstance(datos, dict):
+        return []
+    from .. import cuadros as cuadros_mod
+
+    pista = []
+    for d in _lista(datos, "puntos"):
+        if not isinstance(d, dict):
+            continue
+        caja = cuadros_mod.caja_valida(d.get("caja"))
+        try:
+            tt = float(d.get("t_segundos"))
+        except (TypeError, ValueError):
+            continue
+        if caja and ini - 1 <= tt <= fin + 1:
+            pista.append([round(tt, 2), [round(x, 4) for x in caja]])
+    return pista
+
+
+def _numeros(lista: Any) -> list[int]:
+    if not isinstance(lista, list):
+        lista = [lista] if lista is not None else []
+    return list(dict.fromkeys(n for n in (reglas.limpiar_numero(x) for x in lista) if n is not None))
+
+
+def _juntar_opiniones(primera: dict[str, Any], experto: dict[str, Any]) -> dict[str, Any]:
+    """Combina la respuesta del fuerte con la del experto.
+
+    - Si los dos dicen los mismos tackleadores: se queda eso y la confianza
+      de identificación sube a la mayor de las dos.
+    - Si no coinciden: manda el experto para lo que pasó, pero la
+      identificación queda baja (va a revisión) y los candidatos de los dos
+      quedan para que una persona elija con un clic.
+    """
+    a, b = _numeros(primera.get("tackleadores")), _numeros(experto.get("tackleadores"))
+    conf_a = reglas.normalizar_confianza(primera.get("confianza_identificacion", primera.get("confianza")))
+    conf_b = reglas.normalizar_confianza(experto.get("confianza_identificacion", experto.get("confianza")))
+    salida = dict(experto)
+    salida["candidatos"] = reglas.unir_candidatos(
+        experto.get("candidatos"), experto.get("tackleadores"),
+        primera.get("candidatos"), primera.get("tackleadores"),
+    )
+    salida["opiniones"] = {"fuerte": a, "experto": b}
+    if a and set(a) == set(b):
+        salida["confianza_identificacion"] = max(conf_a, conf_b)
+        salida["nota"] = (str(experto.get("nota") or "") + " | coinciden las dos miradas").strip(" |")
+        salida["coinciden"] = True
+    else:
+        salida["confianza_identificacion"] = min(conf_a, conf_b, 0.5)
+        if not b and a:
+            # El experto no se animó; el fuerte sí: se conserva su lectura,
+            # floja, para que la confirme una persona.
+            salida["tackleadores"] = a
+        salida["nota"] = (
+            str(experto.get("nota") or "")
+            + f" | no coinciden: {a or '¿?'} contra {b or '¿?'}"
+        ).strip(" |")
+        salida["coinciden"] = False
+    return salida
+
+
+def _marcar_imposibles(resueltos: list[dict[str, Any]], propio: str, ventana_s: float = 3.0) -> None:
+    """Nadie tacklea en dos contactos distintos con menos de 3 s de diferencia."""
+    tackles = [
+        (c["t_segundos"], e)
+        for c in resueltos
+        for e in c["eventos"]
+        if e.accion in ("Tackle", "Tackle errado") and e.equipo == propio and e.jugador_numero is not None
+    ]
+    for i, (t1, e1) in enumerate(tackles):
+        for t2, e2 in tackles[i + 1:]:
+            if e1 is e2 or e1.jugador_numero != e2.jugador_numero:
+                continue
+            if 0 < abs(t1 - t2) < ventana_s:
+                for e in (e1, e2):
+                    e.pendiente = True
+                    if "dos tackles" not in e.nota:
+                        e.nota = (e.nota + f" | el {e.jugador_numero} aparece en dos "
+                                  "tackles casi al mismo tiempo").strip(" |")
 
 
 def _contacto_a_eventos(
@@ -804,6 +1062,8 @@ def _contacto_a_eventos(
             )
         )
 
+    if cfg.solo_tackles:
+        eventos = [e for e in eventos if e.accion in ("Tackle", "Tackle errado")]
     if cfg.solo_equipo_propio:
         # Del rival no se guarda nada. Lo que quedó sin equipo se conserva:
         # va a la cola para que una persona diga de quién era.

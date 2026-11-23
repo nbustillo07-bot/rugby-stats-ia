@@ -401,7 +401,8 @@ class TestPlata:
     def test_un_modelo_sin_precio_se_cobra_como_el_mas_caro(self, tmp_path):
         """Para que el tope nunca quede corto por un precio que falta."""
         c, _ = armar_cliente(tmp_path, servidor_por_esquema)
-        assert c.costo("claude-desconocido", 1_000_000, 0) == pytest.approx(2.0)
+        mas_caro = max(p["entrada"] for p in PRECIOS.values())
+        assert c.costo("claude-desconocido", 1_000_000, 0) == pytest.approx(mas_caro)
 
     def test_lo_que_vino_de_la_cache_no_se_paga(self, tmp_path):
         c, vistos = armar_cliente(tmp_path, servidor_por_esquema, usar_cache=True)
@@ -620,3 +621,242 @@ class TestEstimacion:
 
     def test_cero_segundos(self, tmp_path):
         assert costos.estimar(0, cfg_claude(tmp_path)).usd == 0
+
+
+# ---------------------------------------------------------------------------
+# Tackles: zoom, varias fotos, segunda opinión, lógica de juego
+# ---------------------------------------------------------------------------
+
+PRECIOS["claude-opus-5-5"] = {"entrada": 4.0, "salida": 20.0, "cache_lectura": 0.2,
+                              "cache_escritura": 5.0}
+
+
+def cfg_tackles(tmp_path, experto: bool = True) -> Config:
+    cfg = cfg_claude(tmp_path)
+    d = cfg._d
+    d["analisis"]["medir"] = "tackles"
+    d["claude"]["modelos"]["experto"] = ["claude-opus-5-5"] if experto else []
+    d["claude"]["velocidades"]["contacto"] = {
+        "fps": 3.0, "ventana_s": 1.0, "ancho": 448, "margen_antes_s": 1.5,
+        "margen_despues_s": 6.0,
+    }
+    d["claude"]["velocidades"]["localizar"] = {"fps": 2.0, "ventana_s": 1.0, "ancho": 320}
+    d["claude"]["zoom"] = {"activo": True, "ancho_fuente": 640, "escala": 2.0,
+                           "minimo": 0.3, "contexto_fps": 1.0, "contexto_ancho": 320}
+    d["claude"]["fotos_por_jugador"] = 3
+    d["claude"]["umbral_segunda_opinion"] = 0.6
+    return cfg
+
+
+def servidor_tackles(experto_dice=(4,), fuerte_conf=0.4, hay_tackle=True):
+    def responder(req, cuerpo):
+        props = (cuerpo.get("output_config", {}).get("format", {})
+                 .get("schema", {}).get("properties", {}))
+        ts = tiempos(cuerpo) or [0.0]
+        if "puntos" in props:
+            return respuesta({"se_ve_el_contacto": True, "puntos": [
+                {"t_segundos": ts[0], "caja": [0.2, 0.3, 0.4, 0.6]},
+                {"t_segundos": ts[-1], "caja": [0.5, 0.3, 0.7, 0.6]},
+            ]}, modelo="claude-haiku-5-5")
+        if "eventos" in props:
+            medio = ts[len(ts) // 2]
+            return respuesta({"eventos": [
+                {"t_segundos": medio, "accion": "Tackle", "resultado": "",
+                 "equipo": "propio", "numero": None, "confianza": 0.5},
+                {"t_segundos": ts[0] + 1, "accion": "Pase", "resultado": "bueno",
+                 "equipo": "propio", "numero": 9, "confianza": 0.95},
+            ]}, modelo="claude-haiku-5-5")
+        if "tackleadores" in props:
+            if cuerpo["model"] == "claude-opus-5-5":
+                return respuesta({
+                    "portador_equipo": "rival", "tackleadores": list(experto_dice),
+                    "tackleadores_equipo": "propio", "avance_portador": "se_detiene",
+                    "confianza": 0.9, "confianza_identificacion": 0.9,
+                    "hay_tackle_propio": True,
+                    "candidatos": [{"numero": n, "probabilidad": 0.8} for n in experto_dice],
+                }, modelo="claude-opus-5-5")
+            return respuesta({
+                "portador_equipo": "rival", "tackleadores": [4],
+                "tackleadores_equipo": "propio", "avance_portador": "se_detiene",
+                "confianza": 0.9, "confianza_identificacion": fuerte_conf,
+                "hay_tackle_propio": hay_tackle,
+                "candidatos": [{"numero": 4, "probabilidad": 0.5},
+                               {"numero": 7, "probabilidad": 0.3}],
+            })
+        return servidor_por_esquema(req, cuerpo)
+    return responder
+
+
+def cliente_tackles(tmp_path, responder):
+    c, vistos = armar_cliente(tmp_path, responder)
+    c.niveles["experto"] = ["claude-opus-5-5"]
+    return c, vistos
+
+
+class TestZoom:
+    def test_interpolar_y_ventana(self):
+        pista = [(10.0, (0.1, 0.1, 0.2, 0.2)), (12.0, (0.5, 0.5, 0.6, 0.6))]
+        assert cuadros.interpolar_caja(pista, 11.0) == pytest.approx((0.3, 0.3, 0.4, 0.4))
+        assert cuadros.interpolar_caja(pista, 5.0) == (0.1, 0.1, 0.2, 0.2)
+        z = cuadros.ventana_zoom((0.9, 0.9, 1.0, 1.0), escala=2.0, minimo=0.3)
+        assert 0 <= z[0] < z[2] <= 1 and 0 <= z[1] < z[3] <= 1
+        assert z[2] - z[0] == pytest.approx(0.3)
+
+    def test_los_recortes_siguen_al_contacto(self, video, tmp_path):
+        pista = [(40.0, (0.0, 0.0, 0.1, 0.1)), (43.0, (0.8, 0.8, 0.9, 0.9))]
+        lista = cuadros.extraer_zoom(video, 40.0, 43.0, 2.0, pista, 320, tmp_path,
+                                     ancho_fuente=640, escala=2.0, minimo=0.3)
+        assert len(lista) == 6
+        assert all(c.ancho == 320 and c.alto == 180 for c in lista)
+        assert lista[0].ruta.read_bytes() != lista[-1].ruta.read_bytes()
+
+    def test_hoja_de_referencias(self, video, tmp_path):
+        foto = cuadros.recortar(cuadros.un_cuadro(video, 5, tmp_path / "c.jpg", 640),
+                                [0.2, 0.2, 0.4, 0.8], tmp_path / "f.jpg")
+        hoja = cuadros.hoja_referencias([("4. A", [foto, foto]), ("9. B", [foto])],
+                                        tmp_path / "h.jpg")
+        from PIL import Image
+
+        with Image.open(hoja) as im:
+            assert im.size[1] > 2 * 200
+
+    def test_el_pedido_lleva_zoom_y_vista_general(self, video, tmp_path):
+        c, vistos = armar_cliente(tmp_path, servidor_por_esquema)
+        c.pedir(Pedido(prompt="x", video_uri=str(video), inicio_s=40, fin_s=44, fps=3,
+                       ancho=320, zoom={"pista": [[40, [0.2, 0.2, 0.4, 0.4]]],
+                                        "ancho_fuente": 640, "contexto_fps": 1.0,
+                                        "contexto_ancho": 320}))
+        textos = [b["text"] for b in vistos[0]["messages"][0]["content"] if b.get("type") == "text"]
+        assert sum("zoom al contacto" in x and x.startswith("t=") for x in textos) == 12
+        assert sum("vista general" in x and x.startswith("t=") for x in textos) == 4
+
+
+class TestReferencias:
+    def test_varias_fotos_por_jugador_en_hojas(self, video, tmp_path):
+        from rugby_stats.analisis import pasadas
+        from rugby_stats.modelos import Ficha
+
+        foto = cuadros.recortar(cuadros.un_cuadro(video, 5, tmp_path / "c.jpg", 640),
+                                [0.2, 0.2, 0.4, 0.8], tmp_path / "f.jpg")
+        jugadores = hacer_plantel("Club A")
+        fotos = [
+            Ficha(jugador_numero=j.numero, equipo="Club A", t_segundos=t, imagen=str(foto),
+                  confianza=0.9)
+            for j in jugadores[:6] for t in (10, 12, 40, 90)  # 12 está muy cerca de 10
+        ]
+        refs = pasadas.referencias_visuales({}, jugadores, fotos=fotos, por_jugador=3,
+                                            carpeta=tmp_path / "hojas")
+        assert len(refs) == 2  # 6 jugadores de a 4 por hoja
+        assert all(Path(r[1]).exists() for r in refs)
+
+    def test_una_foto_sin_carpeta(self, video, tmp_path):
+        from rugby_stats.analisis import pasadas
+        from rugby_stats.modelos import Ficha
+
+        foto = cuadros.un_cuadro(video, 5, tmp_path / "c.jpg", 320)
+        jugadores = hacer_plantel("Club A")
+        fichas = {4: Ficha(jugador_numero=4, equipo="Club A", t_segundos=1, imagen=str(foto))}
+        assert len(pasadas.referencias_visuales(fichas, jugadores)) == 1
+
+
+class TestTackles:
+    def test_solo_tackles_con_zoom_y_segunda_opinion_que_coincide(
+        self, db, partido_local, tmp_path
+    ):
+        cfg = cfg_tackles(tmp_path)
+        c, vistos = cliente_tackles(tmp_path, servidor_tackles(experto_dice=(4,)))
+        pipeline.correr(db, c, partido_local.id, cfg)
+        eventos = db.eventos(partido_local.id)
+        assert eventos and all(e.accion in ("Tackle", "Tackle errado") for e in eventos)
+        t4 = [e for e in eventos if e.jugador_numero == 4]
+        assert t4 and all(not e.pendiente for e in t4)
+        assert all(e.confianza >= 0.85 for e in t4)
+        # Se ubicó el contacto, se mandó con zoom, y opinó el experto.
+        assert any("puntos" in json.dumps(v.get("output_config", {})) for v in vistos)
+        contactos = [v for v in vistos if "tackleadores" in json.dumps(v.get("output_config", {}))]
+        assert any(v["model"] == "claude-opus-5-5" for v in contactos)
+        assert any("zoom al contacto" in json.dumps(v, ensure_ascii=False) for v in contactos)
+        # Mira hasta 6 s después del contacto.
+        for v in contactos:
+            ts = tiempos(v)
+            assert max(ts) - min(ts) >= 6.5
+
+    def test_si_no_coinciden_queda_pendiente_con_los_candidatos(
+        self, db, partido_local, tmp_path
+    ):
+        from rugby_stats import revision
+
+        cfg = cfg_tackles(tmp_path)
+        c, _ = cliente_tackles(tmp_path, servidor_tackles(experto_dice=(9,)))
+        pipeline.correr(db, c, partido_local.id, cfg)
+        tackles = [e for e in db.eventos(partido_local.id) if e.accion == "Tackle"]
+        assert tackles and all(e.pendiente for e in tackles)
+        numeros = {x["numero"] for x in revision.candidatos_de(tackles[0])}
+        assert {4, 9} <= numeros
+        assert "no coinciden" in tackles[0].nota
+
+    def test_un_falso_positivo_se_borra(self, db, partido_local, tmp_path):
+        cfg = cfg_tackles(tmp_path, experto=False)
+        c, _ = cliente_tackles(tmp_path, servidor_tackles(hay_tackle=False, fuerte_conf=0.9))
+        pipeline.correr(db, c, partido_local.id, cfg)
+        assert [e for e in db.eventos(partido_local.id) if e.accion == "Tackle"] == []
+
+    def test_sin_experto_no_se_le_pregunta(self, db, partido_local, tmp_path):
+        cfg = cfg_tackles(tmp_path, experto=False)
+        c, vistos = cliente_tackles(tmp_path, servidor_tackles())
+        c.niveles.pop("experto", None)
+        pipeline.correr(db, c, partido_local.id, cfg)
+        assert all(v["model"] != "claude-opus-5-5" for v in vistos)
+
+    def test_el_que_no_esta_en_cancha_no_puede_tacklear(self, db, partido_local, tmp_path):
+        from rugby_stats.analisis import reglas
+
+        # El reloj del partido va 10 minutos adelante del video, y el 4 salió
+        # en el minuto 5.
+        p = db.partido(partido_local.id)
+        p.video.desfase_s = 600.0
+        db.guardar_partido(p)
+        jugadores = db.plantel(partido_local.id, "Club A")
+        j4 = next(j for j in jugadores if j.numero == 4)
+        j4.salio_min = 5.0
+        assert 4 not in reglas.en_cancha(jugadores, 10.0)
+        db.actualizar_cambio(partido_local.id, "Club A", 4, None, 5.0)
+        cfg = cfg_tackles(tmp_path, experto=False)
+        cfg._d.setdefault("pasos", {})
+        c, _ = cliente_tackles(tmp_path, servidor_tackles(fuerte_conf=0.95))
+        pipeline.correr(db, c, partido_local.id, cfg, pasos=["gruesa", "fichas", "eventos", "contactos"])
+        t4 = [e for e in db.eventos(partido_local.id) if e.jugador_numero == 4]
+        assert t4 and all(e.pendiente and "no estaba en cancha" in e.nota for e in t4)
+
+    def test_sin_cambios_detectados_no_restringe(self):
+        from rugby_stats.analisis import reglas
+
+        assert reglas.en_cancha(hacer_plantel("Club A"), 30.0) is None
+
+    def test_dos_tackles_del_mismo_casi_juntos(self):
+        from rugby_stats.analisis import pasadas
+        from rugby_stats.modelos import Evento
+
+        a = Evento(t_segundos=10, accion="Tackle", equipo="Club A", jugador_numero=4, resultado="positivo")
+        b = Evento(t_segundos=11.5, accion="Tackle", equipo="Club A", jugador_numero=4, resultado="positivo")
+        c = Evento(t_segundos=30, accion="Tackle", equipo="Club A", jugador_numero=4, resultado="positivo")
+        pasadas._marcar_imposibles([
+            {"t_segundos": 10, "eventos": [a]}, {"t_segundos": 11.5, "eventos": [b]},
+            {"t_segundos": 30, "eventos": [c]},
+        ], "Club A")
+        assert a.pendiente and b.pendiente and not c.pendiente
+
+    def test_unir_candidatos(self):
+        from rugby_stats.analisis import reglas
+
+        r = reglas.unir_candidatos([{"numero": 4, "probabilidad": 0.6}, {"numero": 7, "probabilidad": 0.3}],
+                                   [9], [{"numero": "4", "probabilidad": 0.8}])
+        assert [x["numero"] for x in r][0] == 4
+        assert {x["numero"] for x in r} == {4, 7, 9}
+
+    def test_estimacion_en_modo_tackles(self, tmp_path):
+        cfg = cfg_tackles(tmp_path)
+        con = costos.estimar(4800, cfg)
+        sin = costos.estimar(4800, cfg_tackles(tmp_path, experto=False))
+        assert con.usd > sin.usd > 0
+        assert {"localizar", "contactos", "experto"} <= {p.paso for p in con.pasos}

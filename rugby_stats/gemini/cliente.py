@@ -89,6 +89,11 @@ class Pedido:
     # Fichas visuales: (etiqueta, ruta de la imagen) de cada jugador, para que
     # el modelo compare imagen contra imagen. Gemini las ignora.
     referencias: list = field(default_factory=list)
+    # Zoom que sigue al contacto (solo Claude): {"pista": [[t, [x1,y1,x2,y2]],
+    # ...], "ancho_fuente", "escala", "minimo", "contexto_fps",
+    # "contexto_ancho"}. Con zoom, los cuadros van recortados alrededor del
+    # contacto y se suman unos pocos de la vista general. Gemini lo ignora.
+    zoom: dict | None = None
 
     def clave_cache(self, modelo: str) -> str:
         crudo = json.dumps(
@@ -105,6 +110,7 @@ class Pedido:
                 # caché de pedidos viejos.
                 **({"ancho": self.ancho} if self.ancho else {}),
                 **({"refs": [list(r) for r in self.referencias]} if self.referencias else {}),
+                **({"zoom": self.zoom} if self.zoom else {}),
             },
             sort_keys=True,
             ensure_ascii=False,

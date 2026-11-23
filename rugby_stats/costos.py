@@ -22,6 +22,12 @@ SUPUESTOS = {
     "segundos_por_contacto": 25.0,
     # Re-exámenes de más por contactos que no se resuelven a la primera.
     "repeticion_contactos": 1.2,
+    # Modo solo tackles: tackles (e intentos) de un equipo en 80 minutos, más
+    # los falsos positivos que la pasada rápida lista "por las dúdas".
+    "tackles_por_80_min": 100,
+    "falsos_positivos": 0.15,
+    # Qué parte de los contactos termina pidiendo segunda opinión al experto.
+    "fraccion_segunda_opinion": 0.25,
     # Ventanas de fichas que se miran antes de tener a todos (se corta solo).
     "ventanas_fichas": 8,
     # Texto fijo de cada pedido: instrucciones, plantel, esquema.
@@ -32,7 +38,7 @@ SUPUESTOS = {
     # Lo que contesta el modelo, por tipo de pedido (incluye lo que piensa).
     "salida": {
         "gruesa": 700, "eventos": 1500, "contactos": 600, "fichas": 900,
-        "relato": 2500, "cambios": 300,
+        "relato": 2500, "cambios": 300, "localizar": 900, "experto": 700,
     },
 }
 
@@ -96,8 +102,9 @@ def estimar(segundos: float, cfg: Config, pasos: list[str] | None = None) -> Est
     pedidos_paso = pasos or ["gruesa", "relato", "fichas", "eventos", "contactos", "cambios"]
 
     def agregar(paso: str, pedidos: int, cuadros: int, tok_cuadro: int,
-                cache: int = 0) -> None:
-        modelo = cfg.niveles_claude.get(cfg.nivel_de(paso), ["claude-sonnet-5-5"])[0]
+                cache: int = 0, nivel: str | None = None) -> None:
+        nivel = nivel or cfg.nivel_de(paso)
+        modelo = cfg.niveles_claude.get(nivel, cfg.niveles_claude.get("fuerte", ["claude-sonnet-5-5"]))[0]
         p = _precio(cfg, modelo)
         entrada = pedidos * texto + cuadros * tok_cuadro
         cache_total = pedidos * cache
@@ -123,7 +130,10 @@ def estimar(segundos: float, cfg: Config, pasos: list[str] | None = None) -> Est
 
     if "fichas" in pedidos_paso:
         tok, fps, ventana = _tokens_cuadro(cfg, "fichas")
-        n = min(s["ventanas_fichas"], max(1, math.ceil(muerto / ventana)))
+        tope = s["ventanas_fichas"]
+        if cfg.fotos_por_jugador > 1:
+            tope = int(cfg.get("claude.max_ventanas_fichas", 10) or 10)
+        n = min(tope, max(1, math.ceil(muerto / ventana)))
         cuadros = min(int(n * ventana * fps), n * maximo)
         agregar("fichas", n, cuadros, tok)
 
@@ -137,9 +147,35 @@ def estimar(segundos: float, cfg: Config, pasos: list[str] | None = None) -> Est
         v = cfg.velocidad("contacto")
         tok = tokens_imagen(v.ancho or 1008, alto_para(v.ancho or 1008))
         largo = v.margen_antes_s + v.margen_despues_s + v.ventana_s / 2
-        por_contacto = min(maximo, max(1, int(largo * v.fps)))
-        n = max(1, math.ceil(juego / s["segundos_por_contacto"] * s["repeticion_contactos"]))
-        agregar("contactos", n, n * por_contacto, tok, fichas_vis)
+        zoom = cfg.zoom_contacto
+        if cfg.solo_tackles:
+            n = max(1, math.ceil(
+                segundos / 4800 * s["tackles_por_80_min"] * (1 + s["falsos_positivos"])
+            ))
+        else:
+            n = max(1, math.ceil(juego / s["segundos_por_contacto"] * s["repeticion_contactos"]))
+            if not zoom:
+                n = max(1, math.ceil(n))
+        if zoom:
+            # 1) el liviano ubica el contacto
+            vl = cfg.velocidad("localizar")
+            tok_l = tokens_imagen(vl.ancho or 640, alto_para(vl.ancho or 640))
+            agregar("localizar", n, n * max(1, int(largo * vl.fps)), tok_l, nivel="liviano")
+            # 2) el fuerte mira el zoom más algo de vista general
+            ctx_ancho = int(zoom.get("contexto_ancho") or 512)
+            tok_ctx = tokens_imagen(ctx_ancho, alto_para(ctx_ancho))
+            ctx = int(largo * float(zoom.get("contexto_fps") or 0))
+            por_contacto = min(maximo, max(1, int(largo * v.fps)))
+            tok_medio = (por_contacto * tok + ctx * tok_ctx) // max(1, por_contacto + ctx)
+            agregar("contactos", n, n * (por_contacto + ctx), tok_medio, fichas_vis)
+            # 3) la segunda opinión, solo en los dudosos
+            if "experto" in cfg.niveles_claude:
+                m = max(1, math.ceil(n * s["fraccion_segunda_opinion"]))
+                agregar("experto", m, m * (por_contacto + ctx), tok_medio, fichas_vis,
+                        nivel="experto")
+        else:
+            por_contacto = min(maximo, max(1, int(largo * v.fps)))
+            agregar("contactos", n, n * por_contacto, tok, fichas_vis)
 
     if "cambios" in pedidos_paso:
         n = max(1, math.ceil(segundos / 600))

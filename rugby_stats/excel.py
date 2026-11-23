@@ -361,7 +361,12 @@ def _hoja_notas(
         ),
         (
             "Criterios usados",
-            [
+            ([
+                ("Qué se midió",
+                 "SOLO TACKLES del equipo propio. Las demás columnas (pases, "
+                 "carries, rucks, etc.) quedan en cero porque no se miraron, no "
+                 "porque no hayan pasado."),
+            ] if cfg.solo_tackles else []) + [
                 ("Tackle positivo / negativo", reglas.descripcion_criterio(cfg)),
                 ("Tackle neutro",
                  "El avance del portador quedó dentro de la tolerancia, o no se "

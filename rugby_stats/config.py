@@ -145,6 +145,23 @@ class Config:
         return nivel if nivel in ("fuerte", "liviano") else "fuerte"
 
     @property
+    def solo_tackles(self) -> bool:
+        """Si es True, solo se miden los tackles del equipo propio."""
+        return str(self.get("analisis.medir", "todo")).strip().lower() == "tackles"
+
+    @property
+    def zoom_contacto(self) -> dict[str, Any]:
+        """Opciones del zoom al contacto; {} si está apagado."""
+        z = self.get("claude.zoom") or {}
+        if not isinstance(z, dict) or not z.get("activo", False):
+            return {}
+        return {k: v for k, v in z.items() if k != "activo"}
+
+    @property
+    def fotos_por_jugador(self) -> int:
+        return max(1, int(self.get("claude.fotos_por_jugador", 1) or 1))
+
+    @property
     def solo_equipo_propio(self) -> bool:
         """Si es True, del rival no se registra ni se identifica nada."""
         return bool(self.get("analisis.solo_equipo_propio", False))
@@ -155,6 +172,10 @@ class Config:
 
     def velocidad(self, nombre: str) -> Velocidad:
         d = dict(self.get(f"velocidades.{nombre}") or {})
+        if not d:
+            # Una velocidad que solo existe para un proveedor (p. ej. la de
+            # ubicar el contacto, que es solo de Claude).
+            d = dict(self.get(f"{self.proveedor}.velocidades.{nombre}") or {})
         if not d:
             raise KeyError(
                 f"No hay una velocidad '{nombre}' en config.yaml. "
@@ -286,7 +307,7 @@ class Config:
     def niveles_claude(self) -> dict[str, list[str]]:
         m = self.get("claude.modelos") or {}
         niveles = {
-            n: [str(x) for x in (m.get(n) or [])] for n in ("fuerte", "liviano")
+            n: [str(x) for x in (m.get(n) or [])] for n in ("fuerte", "liviano", "experto")
         } if isinstance(m, dict) else {}
         niveles = {k: v for k, v in niveles.items() if v}
         niveles.setdefault("fuerte", ["claude-sonnet-5-5"])

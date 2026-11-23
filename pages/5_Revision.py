@@ -53,6 +53,9 @@ jugadores_por_equipo = {
     partido.equipo_rival.nombre: base.plantel(partido.id, partido.equipo_rival.nombre),
 }
 
+fotos = revision.foto_de_cada_jugador(base, partido.id, partido.equipo_propio.nombre)
+por_numero = {j.numero: j for j in jugadores_por_equipo[partido.equipo_propio.nombre]}
+
 st.divider()
 
 for t in tarjetas:
@@ -98,6 +101,42 @@ for t in tarjetas:
                 )
 
         with col_form:
+            candidatos = (
+                revision.candidatos_de(e)
+                if e.accion in ("Tackle", "Tackle errado")
+                and e.equipo == partido.equipo_propio.nombre
+                else []
+            )
+            if candidatos:
+                st.markdown("**¿Quién tackleó?** Tocá al que es:")
+                cols = st.columns(len(candidatos))
+                for col, c in zip(cols, candidatos):
+                    n = c["numero"]
+                    j = por_numero.get(n)
+                    if n in fotos:
+                        col.image(fotos[n], width=110)
+                    if col.button(
+                        f"{j.etiqueta if j else n}",
+                        key=f"cand_{e.id}_{n}",
+                        type="primary" if n == e.jugador_numero else "secondary",
+                        help=c.get("por_que") or f"Probabilidad {c['probabilidad']:.0%}",
+                    ):
+                        if n == e.jugador_numero and e.resultado and not e.pendiente:
+                            revision.confirmar(base, partido.id, e)
+                        else:
+                            revision.corregir(
+                                base, partido.id, e,
+                                {
+                                    "jugador_numero": n,
+                                    "resultado": e.resultado
+                                    or ("errado" if e.accion == "Tackle errado" else ""),
+                                },
+                                cfg,
+                            )
+                        st.rerun()
+                    col.caption(f"{c['probabilidad']:.0%}")
+                st.caption("Si no es ninguno, elegilo abajo.")
+                st.divider()
             equipo = st.selectbox(
                 "Equipo",
                 options=list(jugadores_por_equipo),
