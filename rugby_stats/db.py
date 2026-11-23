@@ -389,6 +389,14 @@ class BaseDatos:
             imagen=(f["imagen"] if "imagen" in f.keys() else "") or "",
         )
 
+    def borrar_fichas(self, partido_id: int, equipo: str, solo_de_video: bool = True) -> int:
+        """Borra las fichas de un equipo (las confirmadas a mano no)."""
+        sql = "DELETE FROM fichas WHERE partido_id=? AND equipo=? AND confirmada=0"
+        if solo_de_video:
+            sql += " AND fuente='video'"
+        with self.tx() as con:
+            return con.execute(sql, (partido_id, equipo)).rowcount
+
     def fichas(self, partido_id: int, equipo: str | None = None) -> list[Ficha]:
         sql = "SELECT * FROM fichas WHERE partido_id=?"
         args: list[Any] = [partido_id]

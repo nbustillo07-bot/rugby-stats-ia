@@ -439,6 +439,7 @@ def pasada_fichas(
         return len(distintas)
 
     rangos = rangos[:tope_ventanas]
+    rival = partido.equipo_rival if equipo.nombre == partido.equipo_propio.nombre else partido.equipo_propio
     for i, (ini, fin) in enumerate(rangos, 1):
         faltantes = sorted(n for n in objetivo if cuantas(n) < por_jugador)
         if not faltantes:
@@ -452,7 +453,7 @@ def pasada_fichas(
             )
         r = _tol(cliente, "pasada_fichas").pedir(
             Pedido(
-                prompt=prompts.prompt_fichas(equipo, jugadores, ini, fin, faltantes),
+                prompt=prompts.prompt_fichas(equipo, jugadores, ini, fin, faltantes, rival),
                 video_uri=_uri(partido),
                 inicio_s=ini,
                 fin_s=fin,
@@ -468,9 +469,14 @@ def pasada_fichas(
             _lista(_json(r, f"fichas {ini:.0f}"), "lecturas"),
             ("t_segundos",), ini, fin, "Fichas",
         )
+        nuevas_ventana: list[Ficha] = []
         for d in crudas:
             numero = reglas.limpiar_numero(d.get("numero"))
             if numero is None or numero not in objetivo:
+                continue
+            if not _camiseta_coincide(d, equipo):
+                log.info("Fichas: descarto el %s en %s (camiseta: %s)", numero,
+                         d.get("t_segundos"), d.get("camiseta_vista") or "otra")
                 continue
             crudos_rasgos = d.get("rasgos")
             rasgos = {
@@ -495,14 +501,92 @@ def pasada_fichas(
                 nota=str(d.get("nota") or ""),
             )
             ficha.imagen = recortar_ficha(partido, ficha, d.get("caja"), cfg)
+            nuevas_ventana.append(ficha)
+
+        # Segundo control, barato: el modelo liviano mira las fotos recortadas
+        # y dice cuáles tienen de verdad la camiseta del propio.
+        if con_fotos and nuevas_ventana:
+            nuevas_ventana = _verificar_camisetas(cliente, equipo, rival, nuevas_ventana)
+        for ficha in nuevas_ventana:
             fichas.append(ficha)
             if not con_fotos or ficha.imagen:
-                momentos.setdefault(numero, []).append(ficha.t_segundos)
-            anterior = previas.get(numero)
+                momentos.setdefault(ficha.jugador_numero, []).append(ficha.t_segundos)
+            anterior = previas.get(ficha.jugador_numero)
             if anterior is None or ficha.confianza >= anterior.confianza:
-                previas[numero] = ficha
+                previas[ficha.jugador_numero] = ficha
 
     return fichas
+
+
+_DISENOS = ("raya", "franja", "bastón", "baston", "aro", "a cuadros")
+
+
+def _camiseta_coincide(d: dict[str, Any], equipo: Equipo) -> bool:
+    """False si la lectura dice que la camiseta no es la del equipo."""
+    if d.get("es_del_propio") is False:
+        return False
+    vista = " ".join(
+        str(x) for x in (d.get("camiseta_vista"), (d.get("rasgos") or {}).get("otro")
+                         if isinstance(d.get("rasgos"), dict) else "")
+        if x
+    ).lower()
+    kit = (equipo.kit or "").lower()
+    if not vista or not kit:
+        return True
+    # La del propio tiene diseño (rayas, franjas) y la vista es lisa: no es él.
+    if any(k in kit for k in _DISENOS) and "lisa" in vista and not any(k in vista for k in _DISENOS):
+        return False
+    # Y al revés: la del propio es lisa y la vista tiene rayas.
+    if "lisa" in kit and not any(k in kit for k in _DISENOS) and any(k in vista for k in _DISENOS):
+        return False
+    return True
+
+
+ESQUEMA_VERIFICAR = {
+    "type": "object",
+    "properties": {
+        "del_propio": {"type": "array", "items": {"type": "integer"}},
+        "de_otro_equipo": {"type": "array", "items": {"type": "integer"}},
+    },
+    "required": ["del_propio", "de_otro_equipo"],
+}
+
+
+def _verificar_camisetas(cliente: Any, equipo: Equipo, rival: Equipo, fichas: list[Ficha]) -> list[Ficha]:
+    """Saca las fichas cuya foto muestra la camiseta del otro equipo."""
+    con_foto = [f for f in fichas if f.imagen and Path(f.imagen).exists()]
+    if not con_foto:
+        return fichas
+    referencias = [(f"Foto {k + 1}", str(f.imagen)) for k, f in enumerate(con_foto)]
+    prompt = (
+        f"Cada foto es un jugador recortado de un partido de rugby.\n"
+        f"Camiseta de {equipo.nombre}: {equipo.kit or 'sin descripción'}.\n"
+        f"Camiseta del otro equipo ({rival.nombre}): {rival.kit or 'cualquier otra'}.\n\n"
+        f"Mirando SOLO la camiseta (el diseño: rayas, lisa, franjas, y los colores), "
+        f"decí qué fotos son de {equipo.nombre}. En \"del_propio\" los números de foto "
+        f"que son de {equipo.nombre}; en \"de_otro_equipo\" los que tienen otra "
+        f"camiseta. Si una foto no se distingue, no la pongas en ninguna lista."
+    )
+    r = _tol(cliente, "verificar_camisetas").pedir(
+        Pedido(
+            prompt=prompt,
+            esquema=ESQUEMA_VERIFICAR,
+            etiqueta=f"verificar camisetas {len(con_foto)}",
+            referencias=referencias,
+            titulo_referencias="FOTOS A REVISAR:",
+            nivel="liviano",
+        )
+    )
+    datos = _json(r, "verificar camisetas")
+    if not isinstance(datos, dict):
+        return fichas
+    otros = {reglas.limpiar_numero(x) for x in (datos.get("de_otro_equipo") or [])}
+    descartadas = {id(f) for k, f in enumerate(con_foto) if (k + 1) in otros}
+    for f in con_foto:
+        if id(f) in descartadas:
+            log.info("Fichas: la foto del %s en %.0f s es de otro equipo, la descarto",
+                     f.jugador_numero, f.t_segundos)
+    return [f for f in fichas if id(f) not in descartadas]
 
 
 # ---------------------------------------------------------------------------
@@ -810,7 +894,23 @@ def revisar_contactos(
 
         zoom = None
         if zoom_cfg:
-            pista = _localizar(cliente, partido, cfg, t, ini, fin, pista_txt)
+            pista, quien, seguridad = _localizar(cliente, partido, cfg, t, ini, fin, pista_txt)
+            # Filtro barato: si el liviano ve con claridad que acá no tacklea
+            # el propio (tacklea el rival, o no hay tackle), no se gasta el zoom.
+            if (
+                cfg.solo_tackles
+                and quien in ("rival", "no_hay_tackle")
+                and seguridad >= float(cfg.get("claude.filtro_seguridad", 0.8) or 0.8)
+            ):
+                log.info("Contacto %.1f: lo descarto antes del zoom (%s, %.2f)", t, quien, seguridad)
+                resueltos.append({
+                    "t_segundos": t,
+                    "desde_s": float(item.get("desde_s", t)),
+                    "hasta_s": float(item.get("hasta_s", t)),
+                    "eventos": [],
+                    "descartado": True,
+                })
+                continue
             if pista:
                 zoom = {**zoom_cfg, "pista": pista}
 
@@ -919,12 +1019,15 @@ def revisar_contactos(
 def _localizar(
     cliente: Any, partido: Partido, cfg: Config, t: float, ini: float, fin: float,
     pista_txt: str,
-) -> list[list[Any]]:
-    """Le pide al liviano dónde está el contacto en cada cuadro."""
+) -> tuple[list[list[Any]], str, float]:
+    """Le pide al liviano dónde está el contacto en cada cuadro y quién tacklea.
+
+    Devuelve (pista, quien_tacklea, seguridad).
+    """
     try:
         vl = cfg.velocidad("localizar")
     except KeyError:
-        return []
+        return [], "no_se", 0.0
     r = _tol(cliente, "_localizar").pedir(
         Pedido(
             prompt=prompts.prompt_localizar(
@@ -942,7 +1045,9 @@ def _localizar(
     )
     datos = _json(r, f"ubicar {t:.1f}")
     if not isinstance(datos, dict):
-        return []
+        return [], "no_se", 0.0
+    quien = str(datos.get("quien_tacklea") or "no_se")
+    seguridad = reglas.normalizar_confianza(datos.get("seguridad"))
     from .. import cuadros as cuadros_mod
 
     pista = []
@@ -956,7 +1061,7 @@ def _localizar(
             continue
         if caja and ini - 1 <= tt <= fin + 1:
             pista.append([round(tt, 2), [round(x, 4) for x in caja]])
-    return pista
+    return pista, quien, seguridad
 
 
 def _numeros(lista: Any) -> list[int]:

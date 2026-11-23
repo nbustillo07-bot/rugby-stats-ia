@@ -239,6 +239,11 @@ def _correr(
     # ---- 4. fichas ----------------------------------------------------
     if hay_que_correr("fichas"):
         db.marcar_progreso(partido_id, "fichas", "corriendo")
+        if forzar:
+            # Rehacer es empezar de cero: una ficha mala (otro jugador, otra
+            # camiseta) contamina todo lo que viene después.
+            n = db.borrar_fichas(partido_id, partido.equipo_propio.nombre)
+            log.info("Borré %d fichas viejas para rehacerlas.", n)
         previas = db.fichas_vigentes(
             partido_id, partido.equipo_propio.nombre, float("inf")
         )

@@ -324,7 +324,7 @@ class ClienteClaude:
         if referencias:
             bloques.append({
                 "type": "text",
-                "text": (
+                "text": getattr(p, "titulo_referencias", "") or (
                     "FICHAS VISUALES. Así se ve cada jugador del equipo propio: "
                     "cada fila es un jugador, con su número y nombre arriba. Las "
                     "fotos marcadas HOY (o sin marca) son de ESTE partido, "

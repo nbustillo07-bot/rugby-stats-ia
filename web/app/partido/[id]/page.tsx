@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { analizarDeNuevo, borrarPartido, cancelar } from "@/app/acciones";
+import { analizarDeNuevo, borrarPartido, cancelar, rehacerConCamisetas } from "@/app/acciones";
 import Encabezado from "@/components/Encabezado";
 import Estado from "@/components/Estado";
 import Refrescar from "@/components/Refrescar";
@@ -143,6 +143,25 @@ export default async function PaginaPartido({
               </p>
             </div>
 
+          </>
+        )}
+
+        {!activo && (
+          <>
+            <h2>Camisetas</h2>
+            <form className="tarjeta" action={rehacerConCamisetas.bind(null, id)}>
+              <label htmlFor="kit_propio">{p.equipo_propio}</label>
+              <input id="kit_propio" name="kit_propio" defaultValue={p.kit_propio} required />
+              <label htmlFor="kit_rival">{p.equipo_rival}</label>
+              <input id="kit_rival" name="kit_rival" defaultValue={p.kit_rival} required
+                placeholder="lisa bordó, número blanco" />
+              <p className="nota">
+                Si la IA confundió a los equipos, corregí acá cómo es cada camiseta y rehacé el análisis.
+                Se vuelven a sacar las fotos de cada jugador y a contar los tackles (no se vuelve a bajar
+                el video). Lo que ya revisaste no se toca. Cuesta más o menos lo mismo que la primera vez.
+              </p>
+              <button className="btn chico">Guardar y rehacer el análisis</button>
+            </form>
           </>
         )}
 

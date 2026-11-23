@@ -99,6 +99,9 @@ class Pedido:
     # (se cobra al 10%); el resto del prompt va después de las imágenes. Los
     # otros proveedores mandan el prompt entero, como siempre.
     prefijo: str = ""
+    # Título del bloque de imágenes de referencia (por defecto, "fichas
+    # visuales" del equipo propio).
+    titulo_referencias: str = ""
 
     def clave_cache(self, modelo: str) -> str:
         crudo = json.dumps(

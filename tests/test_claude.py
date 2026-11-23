@@ -648,13 +648,14 @@ def cfg_tackles(tmp_path, experto: bool = True) -> Config:
     return cfg
 
 
-def servidor_tackles(experto_dice=(4,), fuerte_conf=0.4, hay_tackle=True):
+def servidor_tackles(experto_dice=(4,), fuerte_conf=0.4, hay_tackle=True, quien=None):
     def responder(req, cuerpo):
         props = (cuerpo.get("output_config", {}).get("format", {})
                  .get("schema", {}).get("properties", {}))
         ts = tiempos(cuerpo) or [0.0]
         if "puntos" in props:
-            return respuesta({"se_ve_el_contacto": True, "puntos": [
+            extra = {"quien_tacklea": quien, "seguridad": 0.95} if quien else {}
+            return respuesta({"se_ve_el_contacto": True, **extra, "puntos": [
                 {"t_segundos": ts[0], "caja": [0.2, 0.3, 0.4, 0.6]},
                 {"t_segundos": ts[-1], "caja": [0.5, 0.3, 0.7, 0.6]},
             ]}, modelo="claude-haiku-5-5")
@@ -801,6 +802,19 @@ class TestTackles:
         pipeline.correr(db, c, partido_local.id, cfg)
         assert [e for e in db.eventos(partido_local.id) if e.accion == "Tackle"] == []
 
+    def test_si_tacklea_el_rival_no_se_gasta_el_zoom(self, db, partido_local, tmp_path):
+        cfg = cfg_tackles(tmp_path)
+        c, vistos = cliente_tackles(tmp_path, servidor_tackles(quien="rival"))
+        pipeline.correr(db, c, partido_local.id, cfg)
+        assert [e for e in db.eventos(partido_local.id) if e.accion == "Tackle"] == []
+        assert not [v for v in vistos if "tackleadores" in json.dumps(v.get("output_config", {}))]
+
+    def test_si_tacklea_el_propio_sigue_al_zoom(self, db, partido_local, tmp_path):
+        cfg = cfg_tackles(tmp_path)
+        c, vistos = cliente_tackles(tmp_path, servidor_tackles(quien="propio"))
+        pipeline.correr(db, c, partido_local.id, cfg)
+        assert [v for v in vistos if "tackleadores" in json.dumps(v.get("output_config", {}))]
+
     def test_sin_experto_no_se_le_pregunta(self, db, partido_local, tmp_path):
         cfg = cfg_tackles(tmp_path, experto=False)
         c, vistos = cliente_tackles(tmp_path, servidor_tackles())
@@ -940,3 +954,49 @@ class TestCacheDelTexto:
         assert len(fijos) >= 2
         assert all(f.get("cache_control") for f in fijos)
         assert len({f["text"] for f in fijos}) == 1
+
+
+from rugby_stats.analisis import pasadas  # noqa: E402
+from rugby_stats.gemini import prompts  # noqa: E402
+from rugby_stats.modelos import Ficha  # noqa: E402
+
+
+class TestCamisetas:
+    def _equipo(self):
+        from rugby_stats.modelos import Equipo
+        return Equipo(nombre="Los Molinos", kit="Rayas horizontales negras blancas y bordo")
+
+    def test_lisa_no_es_la_rayada(self):
+        eq = self._equipo()
+        assert not pasadas._camiseta_coincide({"camiseta_vista": "bordo lisa"}, eq)
+        assert not pasadas._camiseta_coincide({"rasgos": {"otro": "camiseta bordo lisa"}}, eq)
+        assert not pasadas._camiseta_coincide({"es_del_propio": False}, eq)
+        assert pasadas._camiseta_coincide({"camiseta_vista": "rayas negras y blancas"}, eq)
+        assert pasadas._camiseta_coincide({}, eq)
+
+    def test_el_prompt_pide_mirar_la_camiseta(self):
+        from rugby_stats.modelos import Equipo
+        texto = prompts.prompt_fichas(self._equipo(), hacer_plantel("Los Molinos"), 0, 60,
+                                      rival=Equipo(nombre="Lanus", kit=""))
+        assert "CAMISETA" in texto and "Lanus" in texto
+        assert "es_del_propio" in prompts.ESQUEMA_FICHAS["properties"]["lecturas"]["items"]["required"]
+        assert "REGLA DE LA CAMISETA" in prompts.describir_equipos(self._equipo(), Equipo(nombre="Lanus"))
+
+    def test_la_verificacion_saca_las_fotos_del_rival(self, video, tmp_path):
+        from rugby_stats.modelos import Equipo
+        foto = cuadros.un_cuadro(video, 5, tmp_path / "c.jpg", 320)
+
+        class Cliente:
+            visto = None
+            def pedir(self, p):
+                Cliente.visto = p
+                class R:
+                    def json(self):
+                        return {"del_propio": [1], "de_otro_equipo": [2]}
+                return R()
+
+        fichas = [Ficha(jugador_numero=6, equipo="Los Molinos", t_segundos=t, imagen=str(foto))
+                  for t in (10, 20)]
+        quedan = pasadas._verificar_camisetas(Cliente(), self._equipo(), Equipo(nombre="Lanus"), fichas)
+        assert [f.t_segundos for f in quedan] == [10]
+        assert Cliente.visto.nivel == "liviano" and len(Cliente.visto.referencias) == 2

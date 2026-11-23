@@ -283,6 +283,12 @@ class Nube:
                 (partido_id,),
             )
             personas = {int(num): pid for num, pid in cur.fetchall()}
+            # Lo de este partido se reemplaza entero: si se rehízo el análisis,
+            # las fotos viejas (quizás de otro jugador) no tienen que quedar.
+            cur.execute(
+                "DELETE FROM fotos_persona WHERE partido_id = %s AND origen = 'partido'",
+                (partido_id,),
+            )
             for numero, imagenes in fotos.items():
                 pid = personas.get(int(numero))
                 if pid is None or not imagenes:

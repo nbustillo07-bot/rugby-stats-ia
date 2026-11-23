@@ -43,6 +43,9 @@ def describir_equipos(propio: Equipo, rival: Equipo) -> str:
         detalle = f'- "{etiqueta}" = {eq.nombre}'
         if eq.kit:
             detalle += f". Camiseta: {eq.kit}"
+        elif etiqueta == "rival":
+            detalle += (". Camiseta: no me la describieron; es cualquier camiseta que "
+                        "NO sea la del propio")
         legible = {
             "alta": "el número de la espalda se lee bien",
             "media": "el número de la espalda se lee a veces",
@@ -54,6 +57,13 @@ def describir_equipos(propio: Equipo, rival: Equipo) -> str:
     lineas.append(
         'En el campo "equipo" de cada evento escribí exactamente "propio" o '
         '"rival", nunca el nombre del club.'
+    )
+    lineas.append(
+        "REGLA DE LA CAMISETA: antes de decir que un jugador es del propio, mirale "
+        "la camiseta. Tiene que ser la del propio. Si tiene otro diseño (por ejemplo "
+        "lisa cuando la del propio es a rayas), es del rival aunque su número exista "
+        "en el plantel propio. Los dos equipos pueden compartir colores: lo que los "
+        "distingue es el diseño (rayas, lisa, franjas)."
     )
     return "\n".join(lineas)
 
@@ -203,8 +213,13 @@ ESQUEMA_FICHAS = {
                     # proporciones de 0 a 1: [x izquierda, y arriba, x derecha,
                     # y abajo]. Con esto se recorta la ficha visual.
                     "caja": {"type": "array", "items": {"type": "number"}},
+                    # Qué camiseta tiene puesta, en palabras, y si es la del
+                    # propio. Las lecturas de otra camiseta se descartan.
+                    "camiseta_vista": {"type": "string"},
+                    "es_del_propio": {"type": "boolean"},
                 },
-                "required": ["numero", "t_segundos", "confianza", "rasgos"],
+                "required": ["numero", "t_segundos", "confianza", "rasgos",
+                             "camiseta_vista", "es_del_propio"],
             },
         }
     },
@@ -214,7 +229,7 @@ ESQUEMA_FICHAS = {
 
 def prompt_fichas(
     equipo: Equipo, jugadores: list[Jugador], inicio_s: float, fin_s: float,
-    faltantes: list[int] | None = None,
+    faltantes: list[int] | None = None, rival: Equipo | None = None,
 ) -> str:
     objetivo = ""
     if faltantes:
@@ -225,7 +240,17 @@ def prompt_fichas(
     return f"""{ENCABEZADO}
 
 Equipo a fichar: {equipo.nombre}. Camiseta: {equipo.kit or "sin descripción"}.
-Mirá SOLO a los jugadores de este equipo; ignorá a los del otro.
+El otro equipo{f" ({rival.nombre})" if rival else ""}: \
+{(rival.kit if rival and rival.kit else "cualquier otra camiseta")}.
+Mirá SOLO a los jugadores de {equipo.nombre}; ignorá a los del otro.
+
+LO MÁS IMPORTANTE: antes de leer el número, mirá la CAMISETA. Tiene que ser \
+la de {equipo.nombre} ({equipo.kit or "la descripta"}). Los números del otro \
+equipo suelen leerse mejor y es fácil confundirse: si la camiseta no es la de \
+{equipo.nombre} (por ejemplo es lisa y la de {equipo.nombre} es a rayas), NO \
+la devuelvas, aunque el número exista en el plantel. En "camiseta_vista" \
+describí en pocas palabras la camiseta que ves en ese jugador, y en \
+"es_del_propio" poné true solo si es la de {equipo.nombre}.
 
 {describir_plantel(jugadores)}
 {objetivo}
@@ -562,8 +587,11 @@ ESQUEMA_LOCALIZAR = {
             },
         },
         "se_ve_el_contacto": {"type": "boolean"},
+        # Filtro barato antes del zoom: quién tacklea, según la camiseta.
+        "quien_tacklea": {"type": "string", "enum": ["propio", "rival", "no_hay_tackle", "no_se"]},
+        "seguridad": {"type": "number"},
     },
-    "required": ["puntos"],
+    "required": ["puntos", "quien_tacklea", "seguridad"],
 }
 
 
@@ -592,7 +620,13 @@ que van a tacklearlo;
 
 La caja tiene que ser justa pero no cortar a nadie. Si en algún cuadro no se \
 ve, salteá ese cuadro. "se_ve_el_contacto": false si en estos cuadros no hay \
-ningún contacto."""
+ningún contacto.
+
+Además, en "quien_tacklea": mirando las CAMISETAS, ¿quién hace el tackle? \
+"propio" si el que tacklea tiene la camiseta del propio; "rival" si tacklea un \
+jugador del rival (o sea, el que lleva la pelota es del propio); \
+"no_hay_tackle" si no hay ningún tackle (un ruck, un pase, una pausa); \
+"no_se" si no se distingue. En "seguridad", de 0 a 1, qué tan seguro estás."""
 
 
 # ---------------------------------------------------------------------------

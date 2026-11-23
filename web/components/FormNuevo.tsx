@@ -82,8 +82,8 @@ export default function FormNuevo({
             <label htmlFor="equipo_propio">Tu equipo</label>
             <input ref={equipo} id="equipo_propio" name="equipo_propio" defaultValue={v.equipo_propio} required />
             <label htmlFor="kit_propio">Cómo es la camiseta</label>
-            <input id="kit_propio" name="kit_propio" defaultValue={v.kit_propio}
-              placeholder="rayas verticales bordó y blancas, número blanco" />
+            <input id="kit_propio" name="kit_propio" defaultValue={v.kit_propio} required
+              placeholder="rayas horizontales negras, blancas y bordó" />
             <label htmlFor="legible_propio">¿Se lee el número en la espalda?</label>
             <select id="legible_propio" name="legible_propio" defaultValue={v.legible_propio || "media"}>
               <option value="alta">Sí, bien</option>
@@ -95,7 +95,8 @@ export default function FormNuevo({
             <label htmlFor="equipo_rival">Rival</label>
             <input id="equipo_rival" name="equipo_rival" defaultValue={v.equipo_rival} required />
             <label htmlFor="kit_rival">Cómo es su camiseta</label>
-            <input id="kit_rival" name="kit_rival" defaultValue={v.kit_rival} placeholder="lisa azul, número blanco" />
+            <input id="kit_rival" name="kit_rival" defaultValue={v.kit_rival} required placeholder="lisa bordó, número blanco" />
+            <p className="nota">Importante si los dos usan colores parecidos: decí si es lisa, a rayas, con franjas.</p>
             <input type="hidden" name="legible_rival" value="media" />
           </div>
         </div>

@@ -35,6 +35,9 @@ async function validarYCrear(datos: FormData): Promise<string | number> {
   const video = t("video_url");
   if (!/^https?:\/\//.test(video)) return "Pegá el link del video (YouTube).";
   if (!t("equipo_propio") || !t("equipo_rival")) return "Faltan los nombres de los equipos.";
+  if (!t("kit_propio") || !t("kit_rival")) {
+    return "Describí las dos camisetas (la tuya y la del rival): sin eso la IA confunde a los equipos.";
+  }
   const { jugadores, errores } = leerPlantel(t("plantel"));
   if (errores.length) return errores.join(" · ");
   if (jugadores.length < 15) {
@@ -104,6 +107,23 @@ export async function analizarDeNuevo(id: number): Promise<void> {
               actualizado = now() WHERE id = ${id}`;
     await avisarCompu();
   }
+  revalidatePath(`/partido/${id}`);
+}
+
+/** Corregir las camisetas y rehacer el análisis desde las fichas (sin volver a bajar el video). */
+export async function rehacerConCamisetas(id: number, datos: FormData): Promise<void> {
+  await exigirSesion();
+  const t = (k: string) => String(datos.get(k) || "").trim().slice(0, 200);
+  const propio = t("kit_propio");
+  const rival = t("kit_rival");
+  if (!propio || !rival) return;
+  const activos = await sql`SELECT 1 FROM trabajos WHERE partido_id = ${id} AND estado IN ('en_cola','corriendo')`;
+  if (activos.length) return;
+  await sql`UPDATE partidos SET kit_propio = ${propio}, kit_rival = ${rival} WHERE id = ${id}`;
+  await sql`INSERT INTO trabajos (partido_id, tipo) VALUES (${id}, 'rehacer')`;
+  await sql`UPDATE partidos SET estado = 'en_cola', avance = 0, mensaje = 'Esperando a la compu… (rehacer)',
+            actualizado = now() WHERE id = ${id}`;
+  await avisarCompu();
   revalidatePath(`/partido/${id}`);
 }
 

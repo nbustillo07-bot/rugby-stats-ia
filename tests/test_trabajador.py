@@ -7,6 +7,8 @@ nueva y la borra al final.
 
 from __future__ import annotations
 
+import json
+
 import os
 from pathlib import Path
 import uuid
@@ -105,6 +107,25 @@ def test_lo_revisado_en_la_app_no_se_pisa(nube, db, video, tmp_path):
         assert cur.fetchone() == (7, True)
         cur.execute("SELECT count(*) FROM eventos WHERE partido_id=%s AND accion='Tackle'", (pid,))
         assert cur.fetchone()[0] == antes  # el nuevo de ese momento no se duplicó
+
+
+def test_rehacer_borra_las_fichas_y_no_repite_la_gruesa(nube, db, video, tmp_path):
+    pid, _ = cargar_partido(nube, str(video))
+    cfg = cfg_claude(tmp_path)
+    cliente, _ = armar_cliente(tmp_path, servidor_por_esquema)
+    trabajador.procesar(nube, db, cfg, nube.tomar_trabajo(), cliente=cliente)
+    local = nube.partido(pid)["local_id"]
+    viejas = {f.id for f in db.fichas(local)}
+    assert viejas
+    with nube.cursor() as cur:
+        cur.execute("UPDATE partidos SET kit_rival='lisa bordo' WHERE id=%s", (pid,))
+        cur.execute("INSERT INTO trabajos (partido_id, tipo) VALUES (%s, 'rehacer')", (pid,))
+    cliente2, vistos = armar_cliente(tmp_path, servidor_por_esquema)
+    assert trabajador.procesar(nube, db, cfg, nube.tomar_trabajo(), cliente=cliente2) == "listo"
+    assert not viejas & {f.id for f in db.fichas(local)}
+    assert db.partido(local).equipo_rival.kit == "lisa bordo"
+    textos = json.dumps(vistos, ensure_ascii=False)
+    assert "lisa bordo" in textos
 
 
 def test_sin_clave_en_la_compu_avisa_en_la_app(nube, db, video, tmp_path):

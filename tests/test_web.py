@@ -176,6 +176,7 @@ def test_de_punta_a_punta(app, base_pg, video_http, video, db, tmp_path):
         pag.fill("#kit_propio", "rayas")
         pag.select_option("#legible_propio", "baja")
         pag.fill("#equipo_rival", "Club B")
+        pag.fill("#kit_rival", "liso")
         pag.fill("#plantel", "1 Uno\n2 Dos")  # incompleto: avisa
         pag.click("button:has-text('Analizar')")
         pag.wait_for_selector("text=hacen falta por lo menos los 15")

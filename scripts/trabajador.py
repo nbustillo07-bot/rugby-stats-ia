@@ -230,6 +230,9 @@ class Latido(threading.Thread):
 # ---------------------------------------------------------------------------
 
 
+PASOS_REHACER = ["cambios", "fichas", "eventos", "contactos"]
+
+
 def _partido_local(db: BaseDatos, fila: dict, jugadores: list[dict]) -> int:
     """Crea o actualiza en la base local el partido que viene de la app."""
     propio = Equipo(nombre=fila["equipo_propio"], kit=fila["kit_propio"] or "",
@@ -378,7 +381,13 @@ def procesar(nube: Nube, db: BaseDatos, cfg: Config, trabajo: Trabajo,
             album = {}
         if album:
             log.info("Fotos del álbum: %d jugadores ya tienen fotos de antes.", len(album))
-        res = pipeline.correr(db, cliente, pid, cfg, progreso=progreso, album=album)
+        if trabajo.tipo == "rehacer":
+            # Rehacer sin volver a bajar el video ni a cortar el partido en
+            # tramos: desde los cambios en adelante, todo de nuevo.
+            res = pipeline.correr(db, cliente, pid, cfg, progreso=progreso, album=album,
+                                  pasos=PASOS_REHACER, forzar=True)
+        else:
+            res = pipeline.correr(db, cliente, pid, cfg, progreso=progreso, album=album)
         n = _subir_resultados(nube, db, trabajo, pid, fila["equipo_propio"])
         try:
             sumadas = nube.sumar_al_album(
