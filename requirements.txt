@@ -17,5 +17,10 @@ yt-dlp[default]>=2026.10
 deno>=2.0                    # el JavaScript que YouTube le exige a yt-dlp
 imageio-ffmpeg>=0.5
 
+# Seguimiento de jugadores (detector y seguimiento en la compu, gratis)
+ultralytics>=8.3
+lap>=0.5
+scikit-learn>=1.4
+
 # Tests
 pytest>=8.0

@@ -1009,3 +1009,32 @@ def test_frenarlo_en_el_lugar_es_neutro(tmp_path):
     assert reglas.clasificar_tackle("retrocede", cfg) == "positivo"
     assert reglas.clasificar_tackle("se_detiene", cfg) == "neutro"
     assert reglas.clasificar_tackle("avanza", cfg) == "negativo"
+
+
+def test_con_seguimiento_las_fichas_salen_de_ahi_y_el_contacto_lo_usa(db, partido_local, tmp_path, monkeypatch):
+    from PIL import Image
+
+    from rugby_stats import seguimiento as S
+
+    foto = tmp_path / "t0_455.jpg"
+    Image.new("RGB", (60, 120), (120, 20, 30)).save(foto)
+
+    def falso(cliente, video, desfase, cfg_seg, carpeta, *a, **k):
+        dets = [S.Det(t=float(x) / 2, pista=1, caja=(100, 50, 200, 300), alto_cuadro=360, ancho_cuadro=640,
+                      equipo="propio") for x in range(0, 240)]
+        tr = S.armar_tramitos(dets, minimo=5, hueco_s=5)
+        for t in tr.values():
+            t.fotos, t.jugador, t.como, t.numero = [str(foto)], 4, "número leído", 4
+            t.descripcion = {"botines": "naranjas"}
+        return S.Seguimiento(dets=dets, tramitos=tr, ancho=640, alto=360)
+
+    monkeypatch.setattr(S, "correr", falso)
+    cfg = cfg_tackles(tmp_path, experto=False)
+    cfg._d["seguimiento"] = {"activo": True, "minimo_jugadores": 1}
+    c, vistos = cliente_tackles(tmp_path, servidor_tackles(quien="propio"))
+    pipeline.correr(db, c, partido_local.id, cfg)
+    fichas = db.fichas(partido_local.id, "Club A")
+    assert fichas and all(f.fuente == "seguimiento" for f in fichas)
+    assert not [v for v in vistos if "lecturas" in json.dumps(v.get("output_config", {}))]
+    contactos = [v for v in vistos if "tackleadores" in json.dumps(v.get("output_config", {}))]
+    assert contactos and any("SEGUIMIENTO" in json.dumps(v, ensure_ascii=False) for v in contactos)

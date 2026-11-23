@@ -393,7 +393,7 @@ class BaseDatos:
         """Borra las fichas de un equipo (las confirmadas a mano no)."""
         sql = "DELETE FROM fichas WHERE partido_id=? AND equipo=? AND confirmada=0"
         if solo_de_video:
-            sql += " AND fuente='video'"
+            sql += " AND fuente IN ('video', 'seguimiento')"
         with self.tx() as con:
             return con.execute(sql, (partido_id, equipo)).rowcount
 

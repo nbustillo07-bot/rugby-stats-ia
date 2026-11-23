@@ -247,14 +247,23 @@ def _correr(
         previas = db.fichas_vigentes(
             partido_id, partido.equipo_propio.nombre, float("inf")
         )
-        nuevas = pasadas.pasada_fichas(
-            cliente, partido, propios, partido.equipo_propio, cfg,
-            tramos_muertos, previas, _sub(progreso, "fichas", 0.3, 0.45),
-            fotos_previas=db.fichas(partido_id, partido.equipo_propio.nombre),
+        por_seguimiento = _fichas_por_seguimiento(
+            cliente, partido, propios, cfg, _sub(progreso, "fichas", 0.3, 0.45)
         )
+        for f in por_seguimiento:
+            db.guardar_ficha(partido_id, f)
+        if len({f.jugador_numero for f in por_seguimiento}) >= int(cfg.get("seguimiento.minimo_jugadores", 3) or 3):
+            # El seguimiento ya armó las fichas: la pasada vieja no hace falta.
+            nuevas = []
+        else:
+            nuevas = pasadas.pasada_fichas(
+                cliente, partido, propios, partido.equipo_propio, cfg,
+                tramos_muertos, previas, _sub(progreso, "fichas", 0.3, 0.45),
+                fotos_previas=db.fichas(partido_id, partido.equipo_propio.nombre),
+            )
         for f in nuevas:
             db.guardar_ficha(partido_id, f)
-        res.fichas_nuevas = len(nuevas)
+        res.fichas_nuevas = len(nuevas) + len(por_seguimiento)
         # Si el rival tiene número legible, no hace falta ficharlo.
         if rivales and partido.equipo_rival.numero_legible == "baja":
             previas_r = db.fichas_vigentes(
@@ -312,6 +321,7 @@ def _correr(
         resueltos = pasadas.revisar_contactos(
             cliente, partido, propios, rivales, fichas, cfg, a_revisar,
             _sub(progreso, "contactos", 0.6, 1.0), fotos=fotos, album=album,
+            seguimiento=_cargar_seguimiento(partido, cfg),
         )
         for contacto in resueltos:
             contacto["eventos"] = _validar(contacto["eventos"], propios, rivales, cfg)
@@ -332,6 +342,69 @@ def _correr(
 # ---------------------------------------------------------------------------
 # Auxiliares
 # ---------------------------------------------------------------------------
+
+
+def _carpeta_seguimiento(partido: Partido, cfg: Config):
+    return cfg.dir_video.parent / "seguimiento" / f"p{partido.id}"
+
+
+def _cargar_seguimiento(partido: Partido, cfg: Config):
+    if not cfg.get("seguimiento.activo", False):
+        return None
+    from .. import seguimiento as seg_mod
+
+    return seg_mod.Seguimiento.cargar(_carpeta_seguimiento(partido, cfg) / "seguimiento.json")
+
+
+def _fichas_por_seguimiento(
+    cliente: Any, partido: Partido, propios: list[Jugador], cfg: Config,
+    progreso: Callable[[str, float], None] | None,
+) -> list[Ficha]:
+    """Sigue a los jugadores en el video y arma las fichas con número y descripción.
+
+    Si no se puede (falta el paquete, no hay video local, falla), devuelve []
+    y el análisis sigue con la pasada de fichas de siempre.
+    """
+    if not cfg.get("seguimiento.activo", False) or not getattr(cliente, "necesita_video_local", False):
+        return []
+    from pathlib import Path
+
+    from .. import seguimiento as seg_mod
+
+    video = partido.video.ruta_local
+    if not video or not Path(video).exists():
+        return []
+    carpeta = _carpeta_seguimiento(partido, cfg)
+    try:
+        seg = seg_mod.correr(
+            cliente, Path(video), float(partido.video.recorte_desde_s or 0.0),
+            dict(cfg.get("seguimiento", {}) or {}), carpeta,
+            partido.equipo_propio.nombre, partido.equipo_propio.kit,
+            partido.equipo_rival.nombre, partido.equipo_rival.kit,
+            sorted(j.numero for j in propios), progreso,
+        )
+    except Interrumpir:
+        raise
+    except Exception as exc:  # noqa: BLE001 - sin seguimiento se sigue igual
+        if seg_mod._es_grave(exc):
+            raise
+        log.warning("No pude seguir a los jugadores (%s). Sigo con las fichas de siempre.", exc)
+        return []
+    seg.guardar(carpeta / "seguimiento.json")
+    fichas: list[Ficha] = []
+    for numero, datos in seg_mod.fichas_del_plantel(seg).items():
+        for k, foto in enumerate(datos["fotos"]):
+            try:
+                t_foto = int(Path(foto).stem.split("_")[-1]) / 10
+            except ValueError:
+                t_foto = datos["desde"][0] + 20 * k
+            fichas.append(Ficha(
+                jugador_numero=numero, equipo=partido.equipo_propio.nombre,
+                t_segundos=t_foto, rasgos=datos["rasgos"], confianza=0.9,
+                fuente="seguimiento", nota=f"seguido {datos['veces']} veces", imagen=foto,
+            ))
+    log.info("Seguimiento: fichas de %d jugadores.", len({f.jugador_numero for f in fichas}))
+    return fichas
 
 
 def _validar(

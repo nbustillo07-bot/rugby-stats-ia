@@ -243,3 +243,21 @@ salida:
   dir: salidas
   # Una fila por jugador de qué equipos. propio | ambos
   jugadores_de: propio
+
+# Seguimiento de jugadores: un detector (corre gratis en la compu) sigue a cada
+# jugador por la cancha; Claude lee el número cuando se ve y describe a cada
+# uno (botines, vincha, cintas, pelo). En cada contacto se sabe quiénes del
+# propio estaban ahí. Si falta el paquete, se usan las fichas de siempre.
+seguimiento:
+  activo: true
+  modelo: yolo11n.pt          # se baja solo la primera vez (~6 MB)
+  fps: 10                     # cuadros por segundo que se miran
+  imgsz: 1280                 # más grande = ve mejor a los de lejos, más lento
+  grupos: 6                   # grupos de colores para separar equipos
+  minimo_detecciones: 5       # un recorrido más corto no sirve
+  fotos_por_tramito: 4
+  por_hoja: 6                 # jugadores por hoja que lee Claude
+  max_tramitos: 240           # tope de recorridos a leer (cada 6 ≈ US$ 0,02)
+  minimo_jugadores: 3         # con menos fichas, se usa también la pasada vieja
+  distancia_maxima: 2.5       # en alturas de jugador, desde el contacto
+

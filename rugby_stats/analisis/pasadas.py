@@ -846,6 +846,7 @@ def revisar_contactos(
     progreso=None,
     fotos: list[Ficha] | None = None,
     album: dict[int, list[str]] | None = None,
+    seguimiento: Any = None,
 ) -> list[dict[str, Any]]:
     """Vuelve a mirar cada contacto con muchos más cuadros por segundo.
 
@@ -914,6 +915,15 @@ def revisar_contactos(
             if pista:
                 zoom = {**zoom_cfg, "pista": pista}
 
+        # Quiénes del propio estaban en el contacto, según el seguimiento.
+        refs_contacto = referencias
+        texto_seg = ""
+        cerca: list[Any] = []
+        if seguimiento is not None:
+            cerca, texto_seg, hoja = _seguidos_en_contacto(seguimiento, t, zoom, cfg, partido, jugadores_propios)
+            if hoja:
+                refs_contacto = list(referencias) + [("EN EL CONTACTO (filas A, B, C...)", hoja)]
+
         def pedir_contacto(ini_: float, fin_: float, fps_: float, nivel: str, etiqueta: str):
             fijo, variable = prompts.prompt_contacto(
                 partido.equipo_propio,
@@ -929,6 +939,8 @@ def revisar_contactos(
                 t_contacto=t,
                 partes=True,
             )
+            if texto_seg:
+                variable = variable + "\n\n" + texto_seg
             r = _tol(cliente, "revisar_contactos").pedir(
                 Pedido(
                     prompt=fijo + "\n\n" + variable,
@@ -941,7 +953,7 @@ def revisar_contactos(
                     esquema=prompts.ESQUEMA_CONTACTO,
                     etiqueta=etiqueta,
                     ancho=v.ancho,
-                    referencias=referencias,
+                    referencias=refs_contacto,
                     nivel=nivel,
                     zoom=zoom,
                 )
@@ -979,6 +991,8 @@ def revisar_contactos(
             if otra:
                 datos = _juntar_opiniones(datos, otra)
 
+        if cerca:
+            datos = _confirmar_con_seguimiento(datos, cerca)
         datos["candidatos"] = reglas.unir_candidatos(datos.get("candidatos"), datos.get("tackleadores"))
         if en_cancha is not None:
             datos["en_cancha"] = en_cancha
@@ -1013,6 +1027,70 @@ def revisar_contactos(
 
     _marcar_imposibles(resueltos, partido.equipo_propio.nombre)
     return resueltos
+
+
+def _seguidos_en_contacto(seguimiento: Any, t: float, zoom: dict | None, cfg: Config,
+                          partido: Partido, jugadores: list[Jugador]) -> tuple[list[Any], str, str]:
+    """Los jugadores del propio que el seguimiento vio en el contacto.
+
+    Devuelve (tramitos, texto para el prompt, hoja de fotos).
+    """
+    from .. import cuadros as cuadros_mod
+    from .. import seguimiento as seg_mod
+
+    caja = None
+    pista = (zoom or {}).get("pista") or []
+    if pista:
+        try:
+            caja = cuadros_mod.interpolar_caja([(float(a), tuple(b)) for a, b in pista], t)
+        except Exception:  # noqa: BLE001
+            caja = None
+    cerca = [tr for tr, dist in seguimiento.cerca_de(t, caja, maximo=4)
+             if dist <= float(cfg.get("seguimiento.distancia_maxima", 2.5) or 2.5) or caja is None]
+    cerca = [tr for tr in cerca if tr.fotos][:3 if caja is None else 4]
+    if not cerca:
+        return [], "", ""
+    nombres = {j.numero: j.etiqueta for j in jugadores}
+    lineas = [
+        "SEGUIMIENTO: un programa siguió a cada jugador de "
+        f"{partido.equipo_propio.nombre} durante todo el tramo. Estos estaban en la zona del "
+        "contacto en ese momento (sus fotos están en la imagen \"EN EL CONTACTO\", una fila por "
+        "jugador, del más cercano al más lejano):"
+    ]
+    for k, tr in enumerate(cerca):
+        letra = seg_mod._letra(k)
+        if tr.jugador is not None and tr.como == "número leído":
+            quien = f"es el {nombres.get(tr.jugador, tr.jugador)} (se le leyó el número)"
+        else:
+            quien = "no se le leyó el número"
+        desc = seg_mod.describir_ficha(tr.descripcion)
+        lineas.append(f"- {letra}: {quien}." + (f" Cómo es: {desc}." if desc else ""))
+    lineas.append(
+        "Usá esto así: primero decidí en los cuadros cuál de ellos (o ninguno) hizo el tackle. "
+        "Si el que tackleó tiene número leído, ese es. Si no, compará su descripción y sus "
+        "fotos (botines, vincha o casco, cintas, pelo, contextura) con las fichas visuales del "
+        "plantel y decidí quién es. El seguimiento puede equivocarse en las pilas: si los "
+        "cuadros muestran otra cosa, mandan los cuadros."
+    )
+    carpeta = cfg.dir_video.parent / "seguimiento" / f"p{partido.id}" / "contactos"
+    try:
+        hoja = str(seg_mod.hoja_tramitos(cerca, carpeta / f"c{int(t * 10)}.jpg", alto=200))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No pude armar la hoja del contacto %.1f: %s", t, exc)
+        hoja = ""
+    return cerca, "\n".join(lineas), hoja
+
+
+def _confirmar_con_seguimiento(datos: dict[str, Any], cerca: list[Any]) -> dict[str, Any]:
+    """Si el tackleador que eligió el modelo coincide con un número leído en el seguimiento, sube la seguridad."""
+    leidos = {tr.jugador for tr in cerca if tr.jugador is not None and tr.como == "número leído"}
+    elegidos = {reglas.limpiar_numero(x) for x in (datos.get("tackleadores") or [])}
+    if leidos and elegidos and elegidos <= leidos:
+        datos = dict(datos)
+        actual = reglas.normalizar_confianza(datos.get("confianza_identificacion", datos.get("confianza")))
+        datos["confianza_identificacion"] = max(actual, 0.9)
+        datos["nota"] = (str(datos.get("nota") or "") + " | coincide con el seguimiento").strip(" |")
+    return datos
 
 
 def _localizar(
