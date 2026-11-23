@@ -75,10 +75,44 @@ def base_pg():
         con.execute(f"DROP DATABASE {nombre} WITH (FORCE)")
 
 
+class _ClaudeFalso(http.server.BaseHTTPRequestHandler):
+    """Contesta como la API de Claude leyendo una foto de formación."""
+    vistos: list = []
+
+    def do_POST(self):  # noqa: N802
+        import json as _json
+
+        cuerpo = _json.loads(self.rfile.read(int(self.headers["content-length"])))
+        _ClaudeFalso.vistos.append(cuerpo)
+        jugadores = [{"numero": n, "nombre": f"Jugador {n}", "apodo": "Curu" if n == 4 else None}
+                     for n in range(1, 24)]
+        texto = _json.dumps({"equipo": "Club A", "jugadores": jugadores, "aviso": None})
+        datos = _json.dumps({"id": "m", "type": "message", "role": "assistant", "model": "x",
+                             "content": [{"type": "text", "text": texto}], "stop_reason": "end_turn",
+                             "usage": {"input_tokens": 1, "output_tokens": 1}}).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(datos)))
+        self.end_headers()
+        self.wfile.write(datos)
+
+    def log_message(self, *a):
+        pass
+
+
 @pytest.fixture
-def app(base_pg):
+def claude_falso():
+    servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _ClaudeFalso)
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{servidor.server_address[1]}"
+    servidor.shutdown()
+
+
+@pytest.fixture
+def app(base_pg, claude_falso):
     puerto = _puerto()
     entorno = {**os.environ, "DATABASE_URL": base_pg, "APP_PASSWORD": CLAVE,
+               "ANTHROPIC_API_KEY": "sk-ant-prueba", "ANTHROPIC_BASE_URL": claude_falso,
                "PORT": str(puerto), "NODE_ENV": "production"}
     proc = subprocess.Popen(["npx", "next", "start", "-p", str(puerto)], cwd=WEB, env=entorno,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -135,7 +169,16 @@ def test_de_punta_a_punta(app, base_pg, video_http, video, db, tmp_path):
         pag.fill("#plantel", "1 Uno\n2 Dos")  # incompleto: avisa
         pag.click("button:has-text('Analizar')")
         pag.wait_for_selector("text=hacen falta por lo menos los 15")
-        pag.fill("#plantel", PLANTEL)
+        # La foto de la formación llena el plantel sola.
+        from PIL import Image
+
+        foto = tmp_path / "formacion.png"
+        Image.new("RGB", (600, 900), (20, 80, 40)).save(foto)
+        pag.set_input_files("input[type=file]", str(foto))
+        pag.wait_for_selector("text=Leí 23 jugadores", timeout=20000)
+        texto = pag.input_value("#plantel")
+        assert texto.splitlines()[3] == "4 Jugador 4 (Curu)" and len(texto.splitlines()) == 23
+        assert _ClaudeFalso.vistos[-1]["messages"][0]["content"][0]["type"] == "image"
         _foto(pag, "1_nuevo")
         pag.click("button:has-text('Analizar')")
         pag.wait_for_selector("text=Esperando a la compu")

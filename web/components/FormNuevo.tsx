@@ -1,8 +1,9 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { crearPartido, type EstadoForm } from "@/app/acciones";
+import SubirFormacion from "./SubirFormacion";
 
 const EJEMPLO = `1 Juan Pérez
 2 Pedro Gómez (Pepe)
@@ -16,9 +17,13 @@ export default function FormNuevo({
 }: { anteriores: { id: number; nombre: string }[]; base: Record<string, string> }) {
   const [estado, accion, enviando] = useActionState<EstadoForm, FormData>(crearPartido, {});
   const router = useRouter();
+  const plantel = useRef<HTMLTextAreaElement>(null);
+  const equipo = useRef<HTMLInputElement>(null);
   const v: Record<string, string> = { ...base, ...(estado.valores || {}) };
   return (
-    <form action={accion}>
+    // La clave hace que, después de un error, el formulario se rearme con lo
+    // que se había escrito (incluidos los desplegables).
+    <form action={accion} key={estado.valores ? JSON.stringify(estado.valores) : "nuevo"}>
       {anteriores.length > 0 && (
         <div className="tarjeta">
           <label htmlFor="copiar">Copiar equipo y plantel de un partido anterior</label>
@@ -53,7 +58,7 @@ export default function FormNuevo({
         <div className="grilla2">
           <div>
             <label htmlFor="equipo_propio">Tu equipo</label>
-            <input id="equipo_propio" name="equipo_propio" defaultValue={v.equipo_propio} required />
+            <input ref={equipo} id="equipo_propio" name="equipo_propio" defaultValue={v.equipo_propio} required />
             <label htmlFor="kit_propio">Cómo es la camiseta</label>
             <input id="kit_propio" name="kit_propio" defaultValue={v.kit_propio}
               placeholder="rayas verticales bordó y blancas, número blanco" />
@@ -76,7 +81,8 @@ export default function FormNuevo({
 
       <div className="tarjeta">
         <label htmlFor="plantel">Plantel de tu equipo: un jugador por línea, número primero</label>
-        <textarea id="plantel" name="plantel" defaultValue={v.plantel} placeholder={EJEMPLO} required />
+        <SubirFormacion plantel={plantel} equipo={equipo} />
+        <textarea ref={plantel} id="plantel" name="plantel" defaultValue={v.plantel} placeholder={EJEMPLO} required />
         <div className="ayuda">El apodo entre paréntesis ayuda (el relator los usa). Del 16 en adelante cuentan como suplentes.</div>
       </div>
 
