@@ -288,7 +288,10 @@ def _eventos_para_subir(db: BaseDatos, pid: int, propio: str) -> list[dict]:
 def _subir_resultados(nube: Nube, db: BaseDatos, trabajo: Trabajo, pid: int,
                       propio: str) -> int:
     n = nube.subir_eventos(trabajo.partido_id, _eventos_para_subir(db, pid, propio))
-    for numero, ruta in revision.foto_de_cada_jugador(db, pid, propio).items():
+    fotos = revision.foto_de_cada_jugador(db, pid, propio)
+    if fotos:
+        nube.borrar_fotos(trabajo.partido_id)
+    for numero, ruta in fotos.items():
         try:
             nube.subir_foto(trabajo.partido_id, numero, Path(ruta).read_bytes())
         except Exception as exc:  # noqa: BLE001 - una foto que no sube no frena

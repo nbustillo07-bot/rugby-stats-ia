@@ -982,11 +982,10 @@ def revisar_contactos(
         datos["candidatos"] = reglas.unir_candidatos(datos.get("candidatos"), datos.get("tackleadores"))
         if en_cancha is not None:
             datos["en_cancha"] = en_cancha
-        descartado = (
-            cfg.solo_tackles
-            and datos.get("hay_tackle_propio") is False
-            and reglas.normalizar_confianza(datos.get("confianza")) >= 0.6
-        )
+        # Si el modelo dice que acá no hay tackle del propio, se descarta
+        # aunque dude: un clip donde no se ve ningún tackle no le sirve a nadie
+        # para revisar.
+        descartado = cfg.solo_tackles and datos.get("hay_tackle_propio") is False
         eventos = [] if descartado else _contacto_a_eventos(
             datos, t, partido, cfg, numeros_propios, numeros_rivales
         )

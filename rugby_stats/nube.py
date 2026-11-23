@@ -235,6 +235,11 @@ class Nube:
                 n += 1
         return n
 
+    def borrar_fotos(self, partido_id: int) -> None:
+        """Saca las fotos de un análisis anterior (pueden ser de otro jugador)."""
+        with self.cursor() as cur:
+            cur.execute("DELETE FROM fotos WHERE partido_id = %s", (partido_id,))
+
     def subir_foto(self, partido_id: int, numero: int, jpg: bytes) -> None:
         with self.cursor() as cur:
             cur.execute(
