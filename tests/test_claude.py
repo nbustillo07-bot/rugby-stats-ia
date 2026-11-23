@@ -1005,6 +1005,7 @@ class TestCamisetas:
 def test_frenarlo_en_el_lugar_es_neutro(tmp_path):
     from rugby_stats.analisis import reglas
     cfg = cfg_tackles(tmp_path)
+    cfg._d["reglas"]["tackle_positivo"] = "portador_retrocede"
     assert reglas.clasificar_tackle("retrocede", cfg) == "positivo"
     assert reglas.clasificar_tackle("se_detiene", cfg) == "neutro"
     assert reglas.clasificar_tackle("avanza", cfg) == "negativo"
