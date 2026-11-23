@@ -1,0 +1,55 @@
+# Prueba: ¿se puede bajar el video de YouTube desde las computadoras de
+# GitHub? Si sí, el análisis completo puede correr acá (con la compu
+# apagada) y la app de Vercel solo muestra los resultados.
+name: Prueba de descarga de YouTube
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Link del video
+        default: https://www.youtube.com/watch?v=VsRZotfwL6A
+      desde:
+        description: Segundo de inicio
+        default: "2745"
+      hasta:
+        description: Segundo de fin
+        default: "2865"
+
+jobs:
+  bajar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Instalar yt-dlp y ffmpeg
+        run: |
+          pip install -q -U yt-dlp imageio-ffmpeg
+          echo "FFMPEG=$(python -c 'import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())')" >> "$GITHUB_ENV"
+      - name: Bajar 2 minutos en 1080p
+        run: |
+          python -m yt_dlp --version
+          python -m yt_dlp --ffmpeg-location "$FFMPEG" \
+            -f "bv*[height<=1080]+ba/b[height<=1080]" \
+            --download-sections "*${{ inputs.desde }}-${{ inputs.hasta }}" \
+            --force-keyframes-at-cuts -o tramo.mp4 "${{ inputs.url }}"
+          ls -la tramo.mp4
+          "$FFMPEG" -hide_banner -i tramo.mp4 2>&1 | grep -E "Duration|Stream" || true
+          "$FFMPEG" -hide_banner -loglevel error -ss 30 -i tramo.mp4 -frames:v 1 cuadro.jpg
+      - name: Bajar los subtítulos automáticos
+        continue-on-error: true
+        run: |
+          python -m yt_dlp --skip-download --write-auto-subs --write-subs \
+            --sub-langs "es.*,es,es-419,-live_chat" --sub-format vtt \
+            -o subtitulos "${{ inputs.url }}"
+          ls -la subtitulos* || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prueba-youtube
+          path: |
+            cuadro.jpg
+            subtitulos*
+          if-no-files-found: ignore
