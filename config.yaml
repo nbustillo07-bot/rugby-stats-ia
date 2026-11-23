@@ -184,12 +184,12 @@ ventanas:
   solape_s: 5
 
 reglas:
-  # Criterio de tackle positivo. Dos valores posibles:
-  #   portador_detenido -> positivo si el portador NO avanza (se queda o retrocede)
-  #   portador_avanza   -> positivo si el portador SÍ avanza
-  # Por defecto el primero, que es la convención del rugby: un tackle dominante
-  # frena o hace retroceder al portador.
-  tackle_positivo: portador_detenido
+  # Criterio de tackle positivo:
+  #   portador_retrocede -> positivo si lo lleva para atrás, neutro si lo frena
+  #                         en el lugar, negativo si avanza (el de Nico)
+  #   portador_detenido  -> positivo si el portador NO avanza (se queda o retrocede)
+  #   portador_avanza    -> positivo si el portador SÍ avanza
+  tackle_positivo: portador_retrocede
   # Cuántos centímetros de avance se toleran antes de considerar que avanzó.
   tolerancia_avance_cm: 50
   # Debajo de esta confianza, el evento va obligatoriamente a revisión humana.

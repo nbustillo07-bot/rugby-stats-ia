@@ -1000,3 +1000,11 @@ class TestCamisetas:
         quedan = pasadas._verificar_camisetas(Cliente(), self._equipo(), Equipo(nombre="Lanus"), fichas)
         assert [f.t_segundos for f in quedan] == [10]
         assert Cliente.visto.nivel == "liviano" and len(Cliente.visto.referencias) == 2
+
+
+def test_frenarlo_en_el_lugar_es_neutro(tmp_path):
+    from rugby_stats.analisis import reglas
+    cfg = cfg_tackles(tmp_path)
+    assert reglas.clasificar_tackle("retrocede", cfg) == "positivo"
+    assert reglas.clasificar_tackle("se_detiene", cfg) == "neutro"
+    assert reglas.clasificar_tackle("avanza", cfg) == "negativo"

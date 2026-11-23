@@ -47,6 +47,13 @@ def clasificar_tackle(
         else:
             return "neutro"
 
+    criterio = cfg.get("reglas.tackle_positivo", "portador_retrocede")
+    if criterio == "portador_retrocede":
+        # El de Nico: positivo si lo lleva para atrás, neutro si lo frena en
+        # el lugar, negativo si el portador avanza.
+        if avanzo:
+            return "negativo"
+        return "positivo" if avance_portador == "retrocede" else "neutro"
     if cfg.tackle_positivo_es_portador_detenido:
         return "negativo" if avanzo else "positivo"
     return "positivo" if avanzo else "negativo"
@@ -55,6 +62,11 @@ def clasificar_tackle(
 def descripcion_criterio(cfg: Config) -> str:
     """El criterio en una línea, para el Excel y la interfaz."""
     tol = cfg.get("reglas.tolerancia_avance_cm", 50)
+    if cfg.get("reglas.tackle_positivo", "portador_retrocede") == "portador_retrocede":
+        return (
+            "Tackle positivo: el tackleador lleva al portador para atrás. Neutro: lo "
+            f"frena en el lugar (menos de {tol} cm). Negativo: el portador avanza."
+        )
     if cfg.tackle_positivo_es_portador_detenido:
         return (
             "Tackle positivo: el portador NO avanza después del contacto "
