@@ -232,3 +232,94 @@ def test_de_punta_a_punta(app, base_pg, video_http, video, db, tmp_path):
         _foto(pag, "4_lista")
         nav.close()
         nube.cerrar()
+
+
+def _entrar(pag, app):
+    pag.goto(app + "/login")
+    pag.fill("#clave", CLAVE)
+    pag.click("text=Entrar")
+    pag.wait_for_selector("text=Partidos")
+
+
+def test_club_equipos_y_album(app, base_pg, video_http, video, db, tmp_path):
+    from PIL import Image
+
+    with sync_api.sync_playwright() as pw:
+        nav = pw.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+        pag = nav.new_page(viewport={"width": 420, "height": 900})
+        _entrar(pag, app)
+
+        # Crear el club con sus cinco equipos.
+        pag.click("nav >> text=Club")
+        pag.fill("#nombre", "Club A")
+        pag.fill("#kit", "rayas")
+        pag.click("text=Crear club")
+        pag.wait_for_selector("h1:has-text('Club A')")
+        for e in ("Primera", "Intermedia", "Pre-A", "Pre-B", "Pre-C"):
+            assert pag.locator(f"h2:has-text('{e}')").count() == 1
+
+        # Un partido de Primera: los jugadores quedan en el club.
+        pag.goto(app + "/nuevo")
+        pag.select_option("#equipo_id", label="Club A · Primera")
+        pag.wait_for_url("**/nuevo?equipo=*")
+        assert pag.input_value("#equipo_propio") == "Club A"
+        assert pag.input_value("#kit_propio") == "rayas"
+        pag.fill("#video_url", video_http)
+        pag.fill("#desde", "0:20")
+        pag.fill("#hasta", "1:20")
+        pag.fill("#equipo_rival", "Club B")
+        pag.fill("#plantel", PLANTEL)
+        pag.click("button:has-text('Analizar')")
+        pag.wait_for_selector("text=Esperando a la compu")
+        partido_id = int(pag.url.rstrip("/").split("/")[-1])
+
+        nube = Nube(base_pg)
+        with nube.cursor() as cur:
+            cur.execute("SELECT count(*) FROM jugadores WHERE partido_id=%s AND persona_id IS NOT NULL", (partido_id,))
+            assert cur.fetchone()[0] == 18
+            cur.execute("UPDATE partidos SET video_url=%s WHERE id=%s", (str(video), partido_id))
+        cfg = cfg_tackles(tmp_path)
+        cliente, _ = cliente_tackles(tmp_path, servidor_tackles(experto_dice=(4,)))
+        assert trabajador.procesar(nube, db, cfg, nube.tomar_trabajo(), cliente=cliente) == "listo"
+
+        # El club muestra a los jugadores; el 4 ya tiene fotos del partido.
+        pag.goto(app + "/club")
+        pag.click("text=Club A")
+        pag.wait_for_selector(".ficha-jugador")
+        assert pag.locator(".ficha-jugador").count() == 18
+        _foto(pag, "6_club")
+        pag.click(".ficha-jugador:has-text('4 · Curu')")
+        pag.wait_for_selector("h1:has-text('Jugador 4')")
+        antes = pag.locator(".album figure").count()
+        assert antes >= 1
+
+        # Subir fotos al álbum a mano.
+        fotos = []
+        for k in range(2):
+            ruta = tmp_path / f"subida{k}.png"
+            Image.new("RGB", (900, 1200), (k * 100, 50, 50)).save(ruta)
+            fotos.append(str(ruta))
+        pag.set_input_files("input[type=file]", fotos)
+        pag.wait_for_selector("text=Listo: 2 foto(s) nuevas.")
+        pag.wait_for_function(f"document.querySelectorAll('.album figure').length === {antes + 2}")
+        _foto(pag, "7_jugador")
+
+        # El segundo partido de Primera ya trae el plantel cargado.
+        pag.goto(app + "/nuevo")
+        pag.select_option("#equipo_id", label="Club A · Primera")
+        pag.wait_for_url("**/nuevo?equipo=*")
+        assert pag.input_value("#plantel").splitlines()[3] == "4 Jugador 4 (Curu)"
+
+        # Y en ese análisis, el álbum del 4 llega como fotos de antes.
+        pag.fill("#video_url", video_http)
+        pag.fill("#desde", "0:20")
+        pag.fill("#hasta", "1:20")
+        pag.fill("#equipo_rival", "Club C")
+        pag.click("button:has-text('Analizar')")
+        pag.wait_for_selector("text=Esperando a la compu")
+        segundo = int(pag.url.rstrip("/").split("/")[-1])
+        album = nube.album_de_partido(segundo)
+        assert len(album.get(4, [])) == 3  # 2 subidas + 1 del partido anterior (tope 3)
+        _foto(pag, "5_club")
+        nav.close()
+        nube.cerrar()

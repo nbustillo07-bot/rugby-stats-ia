@@ -100,3 +100,27 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .compu.si { color: var(--verde); }
 .compu.no { color: var(--rojo); }
 .vacio { text-align: center; color: var(--suave); padding: 32px 16px; }
+nav.menu { display: flex; gap: 14px; align-items: center; }
+nav.menu a { text-decoration: none; font-weight: 600; color: var(--suave); }
+nav.menu a:hover { color: var(--texto); }
+.grilla-jugadores { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
+.ficha-jugador {
+  background: #fff; border: 1px solid var(--borde); border-radius: 12px; padding: 6px; text-decoration: none;
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+}
+.ficha-jugador:hover { border-color: var(--verde); }
+.ficha-jugador img, .ficha-jugador .sinfoto {
+  width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 8px; background: #eef1ef;
+  display: flex; align-items: center; justify-content: center; color: var(--suave); font-size: 26px; font-weight: 700;
+}
+.ficha-jugador b { font-size: 13px; margin-top: 4px; line-height: 1.2; }
+.ficha-jugador small { color: var(--suave); font-size: 12px; }
+.album { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-top: 14px; }
+.album figure { margin: 0; }
+.album img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 8px; background: #eef1ef; }
+.album figcaption { font-size: 12px; color: var(--suave); display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+header.barra { flex-wrap: wrap; row-gap: 4px; }
+header.barra a.marca { white-space: nowrap; }
+@media (max-width: 520px) {
+  header.barra .compu { font-size: 12px; width: 100%; }
+}

@@ -412,7 +412,7 @@ def hoja_referencias(
     jugadores: list[tuple[str, list[Path | str]]],
     destino: Path | str,
     alto_foto: int = 200,
-    max_fotos: int = 3,
+    max_fotos: int = 5,
 ) -> Path | None:
     """Una imagen con varios jugadores: una fila por jugador con sus fotos.
 
@@ -426,11 +426,13 @@ def hoja_referencias(
     for etiqueta, rutas in jugadores:
         fotos = []
         for r in rutas[:max_fotos]:
+            # Cada foto puede venir con una marca chica ("HOY", "ANTES").
+            ruta, marca = (r if isinstance(r, tuple) else (r, ""))
             try:
-                with Image.open(r) as im:
+                with Image.open(ruta) as im:
                     w, h = im.size
-                    fotos.append(im.convert("RGB").resize(
-                        (max(1, int(w * alto_foto / h)), alto_foto)))
+                    fotos.append((im.convert("RGB").resize(
+                        (max(1, int(w * alto_foto / h)), alto_foto)), marca))
             except Exception:  # noqa: BLE001 - una foto rota no frena la hoja
                 continue
         if fotos:
@@ -438,7 +440,7 @@ def hoja_referencias(
     if not filas:
         return None
     barra, sep = 34, 6
-    ancho = max(sum(f.size[0] for f in fotos) + sep * (len(fotos) + 1)
+    ancho = max(sum(f.size[0] for f, _ in fotos) + sep * (len(fotos) + 1)
                 for _, fotos in filas)
     ancho = max(ancho, 320)
     alto = sum(barra + alto_foto + sep for _ in filas) + sep
@@ -451,8 +453,12 @@ def hoja_referencias(
         dibujo.text((8, y + 3), etiqueta, fill=(0, 0, 0), font=fuente)
         y += barra
         x = sep
-        for f in fotos:
+        chica = _fuente(15)
+        for f, marca in fotos:
             hoja.paste(f, (x, y))
+            if marca:
+                dibujo.rectangle([x, y, x + 8 + 9 * len(marca), y + 20], fill=(0, 0, 0))
+                dibujo.text((x + 4, y + 1), marca, fill=(255, 255, 255), font=chica)
             x += f.size[0] + sep
         y += alto_foto + sep
     destino = Path(destino)

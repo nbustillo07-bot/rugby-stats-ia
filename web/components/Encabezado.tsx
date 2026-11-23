@@ -10,7 +10,11 @@ export default async function Encabezado() {
       : `Compu desconectada (hace ${haceTanto(c.hace_s)})`;
   return (
     <header className="barra">
-      <Link href="/" className="marca">🏉 Rugby Stats</Link>
+      <nav className="menu">
+        <Link href="/" className="marca">🏉 Rugby Stats</Link>
+        <Link href="/">Partidos</Link>
+        <Link href="/club">Club</Link>
+      </nav>
       <span className={`compu ${c.conectada ? "si" : "no"}`} title="La compu es la que hace el análisis">
         <span className="punto" /> {texto}
       </span>

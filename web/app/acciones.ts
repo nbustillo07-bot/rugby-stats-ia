@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { prepararBase, sql } from "@/lib/db";
 import { abrirSesion, exigirSesion } from "@/lib/sesion";
 import { aSegundos, leerPlantel } from "@/lib/tackles";
+import { normalizar } from "@/lib/club";
 
 export type EstadoForm = { error?: string; valores?: Record<string, string> };
 
@@ -44,18 +45,48 @@ async function validarYCrear(datos: FormData): Promise<string | number> {
   if (t("hasta") && hasta === null) return "No entendí el «hasta». Usá mm:ss o h:mm:ss.";
   if (desde !== null && hasta !== null && hasta <= desde) return "El «hasta» tiene que ser después del «desde».";
 
-  const nombre = t("nombre") || `${t("equipo_propio")} vs ${t("equipo_rival")}`;
+  const equipoId = Number(t("equipo_id")) || null;
+  const [eq] = equipoId
+    ? await sql<{ club_id: number; division: string }[]>`SELECT club_id, nombre AS division FROM equipos WHERE id = ${equipoId}`
+    : [];
+  const nombre = t("nombre") || `${t("equipo_propio")}${eq ? ` (${eq.division})` : ""} vs ${t("equipo_rival")}`;
   const id = await sql.begin(async (tx) => {
     const [p] = await tx<{ id: number }[]>`
       INSERT INTO partidos (nombre, equipo_propio, kit_propio, legible_propio,
-        equipo_rival, kit_rival, legible_rival, video_url, desde_s, hasta_s, estado, mensaje)
+        equipo_rival, kit_rival, legible_rival, video_url, desde_s, hasta_s, estado, mensaje, equipo_id)
       VALUES (${nombre}, ${t("equipo_propio")}, ${t("kit_propio")}, ${t("legible_propio") || "media"},
         ${t("equipo_rival")}, ${t("kit_rival")}, ${t("legible_rival") || "media"},
-        ${video}, ${desde}, ${hasta}, 'en_cola', 'Esperando a la compu…')
+        ${video}, ${desde}, ${hasta}, 'en_cola', 'Esperando a la compu…', ${eq ? equipoId : null})
       RETURNING id`;
+    // Con equipo elegido, cada jugador se une a su ficha del club (o se crea):
+    // así sus fotos de este partido van a su álbum.
+    const personas: { id: number; nombre: string; apodo: string }[] = eq
+      ? [...(await tx<{ id: number; nombre: string; apodo: string }[]>`
+          SELECT id, nombre, apodo FROM personas WHERE club_id = ${eq.club_id}`)]
+      : [];
     for (const j of jugadores) {
-      await tx`INSERT INTO jugadores (partido_id, numero, nombre, apodo, titular)
-               VALUES (${p.id}, ${j.numero}, ${j.nombre}, ${j.apodo}, ${j.titular})`;
+      let personaId: number | null = null;
+      if (eq) {
+        const n = normalizar(j.nombre);
+        const a = normalizar(j.apodo);
+        const encontrada =
+          personas.find((x) => normalizar(x.nombre) === n) ??
+          (a ? personas.find((x) => normalizar(x.apodo) === a) : undefined);
+        if (encontrada) {
+          personaId = encontrada.id;
+          await tx`UPDATE personas SET numero_habitual = ${j.numero},
+                   apodo = CASE WHEN apodo = '' THEN ${j.apodo} ELSE apodo END
+                   WHERE id = ${personaId}`;
+        } else {
+          const [nueva] = await tx<{ id: number }[]>`
+            INSERT INTO personas (club_id, equipo_id, nombre, apodo, numero_habitual)
+            VALUES (${eq.club_id}, ${equipoId}, ${j.nombre}, ${j.apodo}, ${j.numero}) RETURNING id`;
+          personaId = nueva.id;
+          personas.push({ id: nueva.id, nombre: j.nombre, apodo: j.apodo });
+        }
+      }
+      await tx`INSERT INTO jugadores (partido_id, numero, nombre, apodo, titular, persona_id)
+               VALUES (${p.id}, ${j.numero}, ${j.nombre}, ${j.apodo}, ${j.titular}, ${personaId})`;
     }
     await tx`INSERT INTO trabajos (partido_id) VALUES (${p.id})`;
     return p.id;

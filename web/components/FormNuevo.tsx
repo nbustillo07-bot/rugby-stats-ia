@@ -13,8 +13,12 @@ const EJEMPLO = `1 Juan Pérez
 16 ... (suplentes del 16 en adelante)`;
 
 export default function FormNuevo({
-  anteriores, base,
-}: { anteriores: { id: number; nombre: string }[]; base: Record<string, string> }) {
+  anteriores, base, equipos,
+}: {
+  anteriores: { id: number; nombre: string }[];
+  base: Record<string, string>;
+  equipos: { id: number; etiqueta: string }[];
+}) {
   const [estado, accion, enviando] = useActionState<EstadoForm, FormData>(crearPartido, {});
   const router = useRouter();
   const plantel = useRef<HTMLTextAreaElement>(null);
@@ -24,7 +28,25 @@ export default function FormNuevo({
     // La clave hace que, después de un error, el formulario se rearme con lo
     // que se había escrito (incluidos los desplegables).
     <form action={accion} key={estado.valores ? JSON.stringify(estado.valores) : "nuevo"}>
-      {anteriores.length > 0 && (
+      <div className="tarjeta">
+        <label htmlFor="equipo_id">¿De qué equipo es el partido?</label>
+        <select
+          id="equipo_id"
+          name="equipo_id"
+          defaultValue={v.equipo_id || ""}
+          onChange={(e) => router.push(e.target.value ? `/nuevo?equipo=${e.target.value}` : "/nuevo")}
+        >
+          <option value="">— ninguno (cargo todo a mano) —</option>
+          {equipos.map((e) => <option key={e.id} value={e.id}>{e.etiqueta}</option>)}
+        </select>
+        <div className="ayuda">
+          {equipos.length
+            ? "Al elegirlo se completa el club, la camiseta y el último plantel, y las fotos de cada jugador quedan en su álbum."
+            : <>Todavía no hay clubes: creá el tuyo en <a href="/club">Club</a> y cada jugador va a tener su álbum de fotos.</>}
+        </div>
+      </div>
+
+      {anteriores.length > 0 && !v.equipo_id && (
         <div className="tarjeta">
           <label htmlFor="copiar">Copiar equipo y plantel de un partido anterior</label>
           <select id="copiar" defaultValue="" onChange={(e) => e.target.value && router.push(`/nuevo?copiar=${e.target.value}`)}>

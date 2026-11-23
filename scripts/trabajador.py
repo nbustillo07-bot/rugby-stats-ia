@@ -169,6 +169,35 @@ def _subir_resultados(nube: Nube, db: BaseDatos, trabajo: Trabajo, pid: int,
     return n
 
 
+def _bajar_album(nube: Nube, trabajo: Trabajo, carpeta: Path) -> dict[int, list[str]]:
+    """Baja las fotos del álbum de los jugadores de este partido."""
+    album: dict[int, list[str]] = {}
+    destino = carpeta / f"p{trabajo.partido_id}"
+    destino.mkdir(parents=True, exist_ok=True)
+    for numero, imagenes in nube.album_de_partido(trabajo.partido_id).items():
+        for k, img in enumerate(imagenes):
+            ruta = destino / f"n{numero}_{k}.jpg"
+            ruta.write_bytes(img)
+            album.setdefault(numero, []).append(str(ruta))
+    return album
+
+
+def _fotos_para_el_album(db: BaseDatos, pid: int, propio: str, por_jugador: int = 2) -> dict[int, list[bytes]]:
+    """Los mejores recortes de hoy de cada jugador, de momentos distintos."""
+    salida: dict[int, list[bytes]] = {}
+    momentos: dict[int, list[float]] = {}
+    fichas = sorted(db.fichas(pid, propio), key=lambda f: (-f.confianza, f.t_segundos))
+    for f in fichas:
+        if f.confianza < 0.6 or not f.imagen or not Path(f.imagen).exists():
+            continue
+        ts = momentos.setdefault(f.jugador_numero, [])
+        if len(ts) >= por_jugador or any(abs(f.t_segundos - x) < 15 for x in ts):
+            continue
+        ts.append(f.t_segundos)
+        salida.setdefault(f.jugador_numero, []).append(Path(f.imagen).read_bytes())
+    return salida
+
+
 def procesar(nube: Nube, db: BaseDatos, cfg: Config, trabajo: Trabajo,
              latido: Latido | None = None, cliente=None) -> str:
     """Hace un pedido de análisis. Devuelve el estado final."""
@@ -217,8 +246,21 @@ def procesar(nube: Nube, db: BaseDatos, cfg: Config, trabajo: Trabajo,
                     log.debug("No pude subir el avance: %s", exc)
 
         no_dormir(True)
-        res = pipeline.correr(db, cliente, pid, cfg, progreso=progreso)
+        try:
+            album = _bajar_album(nube, trabajo, cfg.dir_video.parent / "album")
+        except Exception as exc:  # noqa: BLE001 - sin álbum se analiza igual
+            log.warning("No pude bajar el álbum: %s", exc)
+            album = {}
+        if album:
+            log.info("Fotos del álbum: %d jugadores ya tienen fotos de antes.", len(album))
+        res = pipeline.correr(db, cliente, pid, cfg, progreso=progreso, album=album)
         n = _subir_resultados(nube, db, trabajo, pid, fila["equipo_propio"])
+        try:
+            sumadas = nube.sumar_al_album(
+                trabajo.partido_id, _fotos_para_el_album(db, pid, fila["equipo_propio"]))
+            log.info("Al álbum: %d fotos nuevas.", sumadas)
+        except Exception as exc:  # noqa: BLE001 - el álbum no frena nada
+            log.warning("No pude sumar fotos al álbum: %s", exc)
         tackles = [e for e in db.eventos(pid) if e.accion in ("Tackle", "Tackle errado")]
         dudosos = len([e for e in tackles if e.pendiente or e.jugador_numero is None])
         mensaje = (

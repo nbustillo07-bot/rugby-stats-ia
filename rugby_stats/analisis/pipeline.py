@@ -79,8 +79,12 @@ def correr(
     pasos: list[str] | None = None,
     forzar: bool = False,
     progreso: Callable[[str, float], None] | None = None,
+    album: dict[int, list[str]] | None = None,
 ) -> Resultado:
     """Corre el análisis y lleva la cuenta de la plata.
+
+    ``album``: fotos de partidos anteriores o subidas a mano, por número de
+    camiseta de hoy. Se suman a las fotos del día para reconocer a cada uno.
 
     Antes de arrancar le dice al cliente cuánto se gastó ya en este partido
     (para que respete el tope), y al terminar —aunque sea por un error o por
@@ -92,7 +96,7 @@ def correr(
         empezar(previo, cfg.tope_usd_por_partido)
     gasto = 0.0
     try:
-        res = _correr(db, cliente, partido_id, cfg, pasos, forzar, progreso)
+        res = _correr(db, cliente, partido_id, cfg, pasos, forzar, progreso, album)
     finally:
         gasto = float(getattr(cliente, "gasto_usd", 0.0) or 0.0)
         if gasto > 0:
@@ -116,6 +120,7 @@ def _correr(
     pasos: list[str] | None = None,
     forzar: bool = False,
     progreso: Callable[[str, float], None] | None = None,
+    album: dict[int, list[str]] | None = None,
 ) -> Resultado:
     """Corre el análisis de un partido.
 
@@ -272,7 +277,7 @@ def _correr(
         eventos, a_revisar = pasadas.pasada_eventos(
             cliente, partido, propios, rivales, fichas, cfg,
             tramos_juego, transcripcion, _sub(progreso, "eventos", 0.45, 0.6),
-            fotos=fotos,
+            fotos=fotos, album=album,
         )
         eventos = _validar(eventos, propios, rivales, cfg)
         db.borrar_eventos(partido_id, partido.analizar_desde_s or 0.0,
@@ -301,7 +306,7 @@ def _correr(
         db.marcar_progreso(partido_id, "contactos", "corriendo")
         resueltos = pasadas.revisar_contactos(
             cliente, partido, propios, rivales, fichas, cfg, a_revisar,
-            _sub(progreso, "contactos", 0.6, 1.0), fotos=fotos,
+            _sub(progreso, "contactos", 0.6, 1.0), fotos=fotos, album=album,
         )
         for contacto in resueltos:
             contacto["eventos"] = _validar(contacto["eventos"], propios, rivales, cfg)

@@ -860,3 +860,19 @@ class TestTackles:
         sin = costos.estimar(4800, cfg_tackles(tmp_path, experto=False))
         assert con.usd > sin.usd > 0
         assert {"localizar", "contactos", "experto"} <= {p.paso for p in con.pasos}
+
+
+class TestAlbum:
+    def test_las_fotos_de_antes_entran_aunque_hoy_no_haya_foto(self, video, tmp_path):
+        from rugby_stats.analisis import pasadas
+        from rugby_stats.modelos import Ficha
+
+        foto = cuadros.recortar(cuadros.un_cuadro(video, 5, tmp_path / "c.jpg", 640),
+                                [0.2, 0.2, 0.4, 0.8], tmp_path / "f.jpg")
+        jugadores = hacer_plantel("Club A")
+        hoy = [Ficha(jugador_numero=4, equipo="Club A", t_segundos=10, imagen=str(foto), confianza=0.9)]
+        refs = pasadas.referencias_visuales({}, jugadores, fotos=hoy, por_jugador=3,
+                                            carpeta=tmp_path / "hojas",
+                                            album={9: [str(foto)], 99: [str(foto)]})
+        assert len(refs) == 1
+        assert "4." in refs[0][0] and "9." in refs[0][0]  # el 99 no está en el plantel

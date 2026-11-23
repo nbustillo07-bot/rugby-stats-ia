@@ -313,11 +313,14 @@ class ClienteClaude:
             bloques.append({
                 "type": "text",
                 "text": (
-                    "FICHAS VISUALES. Así se ve cada jugador del equipo propio en "
-                    "ESTE partido: son recortes de cuadros donde se le leyó el "
-                    "número en la espalda. Usalas para reconocerlos en los "
-                    "cuadros que siguen comparando casco, vincha, vendas, "
-                    "botines, pelo y contextura."
+                    "FICHAS VISUALES. Así se ve cada jugador del equipo propio: "
+                    "cada fila es un jugador, con su número y nombre arriba. Las "
+                    "fotos marcadas HOY (o sin marca) son de ESTE partido, "
+                    "recortadas donde se le leyó el número: valen para casco, "
+                    "vincha, vendas, botines, pelo y contextura. Las marcadas "
+                    "ANTES son de otros partidos o del álbum del club: ahí puede "
+                    "tener otro número, otros botines u otra ropa, así que usalas "
+                    "para la cara, el pelo, la contextura y la forma de correr."
                 ),
             })
             for etiqueta, ruta in referencias:

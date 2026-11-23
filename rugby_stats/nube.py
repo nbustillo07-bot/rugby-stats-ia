@@ -237,3 +237,68 @@ class Nube:
                    ON CONFLICT (partido_id, numero) DO UPDATE SET imagen = EXCLUDED.imagen""",
                 (partido_id, numero, jpg),
             )
+
+    # -- álbum de cada jugador ----------------------------------------------
+
+    def album_de_partido(self, partido_id: int, por_jugador: int = 3) -> dict[int, list[bytes]]:
+        """Fotos del álbum de cada jugador del plantel, por número de hoy.
+
+        Primero las subidas a mano, después las de partidos anteriores (las
+        más nuevas). No se incluyen las de este mismo partido.
+        """
+        with self.cursor() as cur:
+            cur.execute(
+                """SELECT j.numero, f.imagen FROM jugadores j
+                   JOIN fotos_persona f ON f.persona_id = j.persona_id
+                   WHERE j.partido_id = %s
+                     AND (f.partido_id IS NULL OR f.partido_id <> %s)
+                   ORDER BY j.numero, (f.origen = 'subida') DESC, f.creado DESC""",
+                (partido_id, partido_id),
+            )
+            salida: dict[int, list[bytes]] = {}
+            for numero, imagen in cur.fetchall():
+                lista = salida.setdefault(int(numero), [])
+                if len(lista) < por_jugador:
+                    lista.append(bytes(imagen))
+        return salida
+
+    def sumar_al_album(self, partido_id: int, fotos: dict[int, list[bytes]],
+                       maximo_de_partidos: int = 12) -> int:
+        """Guarda en el álbum de cada jugador sus recortes de este partido.
+
+        Reemplaza los de este partido si ya había (por si se analiza de
+        nuevo) y deja como mucho ``maximo_de_partidos`` fotos de partidos por
+        jugador (las subidas a mano no se tocan nunca).
+        """
+        n = 0
+        with self.con.transaction(), self.cursor() as cur:
+            cur.execute(
+                "SELECT numero, persona_id FROM jugadores WHERE partido_id = %s "
+                "AND persona_id IS NOT NULL",
+                (partido_id,),
+            )
+            personas = {int(num): pid for num, pid in cur.fetchall()}
+            for numero, imagenes in fotos.items():
+                pid = personas.get(int(numero))
+                if pid is None or not imagenes:
+                    continue
+                cur.execute(
+                    "DELETE FROM fotos_persona WHERE persona_id = %s AND partido_id = %s "
+                    "AND origen = 'partido'",
+                    (pid, partido_id),
+                )
+                for img in imagenes:
+                    cur.execute(
+                        "INSERT INTO fotos_persona (persona_id, imagen, origen, partido_id) "
+                        "VALUES (%s, %s, 'partido', %s)",
+                        (pid, img, partido_id),
+                    )
+                    n += 1
+                cur.execute(
+                    """DELETE FROM fotos_persona WHERE id IN (
+                         SELECT id FROM fotos_persona
+                         WHERE persona_id = %s AND origen = 'partido'
+                         ORDER BY creado DESC OFFSET %s)""",
+                    (pid, maximo_de_partidos),
+                )
+        return n

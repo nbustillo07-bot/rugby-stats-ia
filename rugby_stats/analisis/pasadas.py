@@ -78,6 +78,8 @@ def referencias_visuales(
     por_jugador: int = 1,
     carpeta: Path | None = None,
     por_hoja: int = 4,
+    album: dict[int, list[str]] | None = None,
+    del_album: int = 2,
 ) -> list[tuple[str, str]]:
     """Las fotos de cada jugador, como (etiqueta, ruta), para el modelo.
 
@@ -104,14 +106,25 @@ def referencias_visuales(
         if any(abs(f.t_segundos - o.t_segundos) < 15 for o in lista):
             continue
         lista.append(f)
-    numeros = sorted(elegidas, key=lambda n: n)[:maximo]
+    # Fotos de partidos anteriores y del álbum del club: ayudan desde el
+    # primer pedido, aunque hoy tenga otro número o botines.
+    viejas: dict[int, list[str]] = {
+        n: [r for r in rutas if Path(r).exists()][:del_album]
+        for n, rutas in (album or {}).items()
+        if n in por_numero
+    }
+    viejas = {n: r for n, r in viejas.items() if r}
+    numeros = sorted(set(elegidas) | set(viejas))[:maximo]
 
     def etiqueta(n: int) -> str:
         j = por_numero.get(n)
         return j.etiqueta if j else str(n)
 
     if por_jugador <= 1 or carpeta is None:
-        salida = [(etiqueta(n), str(elegidas[n][0].imagen)) for n in numeros]
+        salida = [
+            (etiqueta(n), str(elegidas[n][0].imagen) if elegidas.get(n) else viejas[n][0])
+            for n in numeros
+        ]
         salida.sort(key=lambda r: r[0])
         return salida
 
@@ -120,9 +133,17 @@ def referencias_visuales(
     salida = []
     for k in range(0, len(numeros), por_hoja):
         grupo = numeros[k:k + por_hoja]
-        filas = [(etiqueta(n), [Path(f.imagen) for f in elegidas[n]]) for n in grupo]
+        marcar = bool(viejas)
+        filas = [
+            (
+                etiqueta(n),
+                [(str(f.imagen), "HOY" if marcar else "") for f in elegidas.get(n, [])]
+                + [(r, "ANTES") for r in viejas.get(n, [])],
+            )
+            for n in grupo
+        ]
         firma = hashlib.sha256(
-            json.dumps([[e, [str(r) for r in rs]] for e, rs in filas]).encode()
+            json.dumps([[e, [list(r) for r in rs]] for e, rs in filas]).encode()
         ).hexdigest()[:16]
         destino = Path(carpeta) / f"hoja_{firma}.jpg"
         if not destino.exists():
@@ -136,11 +157,11 @@ def referencias_visuales(
     return salida
 
 
-def _referencias(partido: Partido, fichas, jugadores, cfg: Config, fotos=None):
+def _referencias(partido: Partido, fichas, jugadores, cfg: Config, fotos=None, album=None):
     """Las referencias que van en los pedidos de eventos y contactos."""
     return referencias_visuales(
         fichas, jugadores, fotos=fotos, por_jugador=cfg.fotos_por_jugador,
-        carpeta=cfg.dir_video.parent / "fichas" / "hojas",
+        carpeta=cfg.dir_video.parent / "fichas" / "hojas", album=album,
     )
 
 
@@ -443,6 +464,7 @@ def pasada_eventos(
     transcripcion: list[dict[str, Any]] | None = None,
     progreso=None,
     fotos: list[Ficha] | None = None,
+    album: dict[int, list[str]] | None = None,
 ) -> tuple[list[Evento], list[dict[str, Any]]]:
     """Detecta eventos a velocidad media.
 
@@ -467,7 +489,7 @@ def pasada_eventos(
     a_revisar: list[dict[str, Any]] = []
     propio = partido.equipo_propio.nombre
     rival = partido.equipo_rival.nombre
-    referencias = _referencias(partido, fichas, jugadores_propios, cfg, fotos)
+    referencias = _referencias(partido, fichas, jugadores_propios, cfg, fotos, album)
     solo_tackles = cfg.solo_tackles
 
     for i, (ini, fin) in enumerate(rangos, 1):
@@ -679,6 +701,7 @@ def revisar_contactos(
     a_revisar: list[dict[str, Any]],
     progreso=None,
     fotos: list[Ficha] | None = None,
+    album: dict[int, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Vuelve a mirar cada contacto con muchos más cuadros por segundo.
 
@@ -706,7 +729,7 @@ def revisar_contactos(
     v = cfg.velocidad("contacto")
     a_revisar = agrupar_contactos(a_revisar)
     resueltos: list[dict[str, Any]] = []
-    referencias = _referencias(partido, fichas, jugadores_propios, cfg, fotos)
+    referencias = _referencias(partido, fichas, jugadores_propios, cfg, fotos, album)
     numeros_propios = reglas.numeros_del_plantel(jugadores_propios)
     numeros_rivales = reglas.numeros_del_plantel(jugadores_rivales)
     local = bool(getattr(cliente, "necesita_video_local", False))

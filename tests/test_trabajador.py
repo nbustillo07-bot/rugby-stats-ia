@@ -8,6 +8,7 @@ nueva y la borra al final.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import uuid
 
 import pytest
@@ -142,3 +143,52 @@ def test_latido(nube):
     with nube.cursor() as cur:
         cur.execute("SELECT estado, ultimo_latido IS NOT NULL FROM compu")
         assert cur.fetchone() == ("esperando pedidos", True)
+
+
+def test_el_album_se_usa_y_se_alimenta(nube, db, video, tmp_path, monkeypatch):
+    """Las fotos de antes llegan al análisis y las de hoy quedan en el álbum."""
+    from rugby_stats import cuadros
+
+    pid, _ = cargar_partido(nube, str(video))
+    foto = cuadros.recortar(cuadros.un_cuadro(video, 5, tmp_path / "c.jpg", 640),
+                            [0.2, 0.2, 0.4, 0.8], tmp_path / "f.jpg")
+    with nube.cursor() as cur:
+        cur.execute("INSERT INTO clubes (nombre) VALUES ('Club A') RETURNING id")
+        club = cur.fetchone()[0]
+        cur.execute("INSERT INTO equipos (club_id, nombre) VALUES (%s, 'Primera') RETURNING id", (club,))
+        equipo = cur.fetchone()[0]
+        cur.execute("UPDATE partidos SET equipo_id=%s WHERE id=%s", (equipo, pid))
+        personas = {}
+        for n in range(1, 16):
+            cur.execute("INSERT INTO personas (club_id, equipo_id, nombre) VALUES (%s,%s,%s) RETURNING id",
+                        (club, equipo, f"Jugador {n}"))
+            personas[n] = cur.fetchone()[0]
+            cur.execute("UPDATE jugadores SET persona_id=%s WHERE partido_id=%s AND numero=%s",
+                        (personas[n], pid, n))
+        cur.execute("INSERT INTO fotos_persona (persona_id, imagen) VALUES (%s, %s)",
+                    (personas[9], foto.read_bytes()))
+
+    recibido = {}
+    original = trabajador.pipeline.correr
+
+    def espiar(*a, **k):
+        recibido.update(k.get("album") or {})
+        return original(*a, **k)
+
+    monkeypatch.setattr(trabajador.pipeline, "correr", espiar)
+    cfg = cfg_claude(tmp_path)
+    cliente, _ = armar_cliente(tmp_path, servidor_por_esquema)
+    assert trabajador.procesar(nube, db, cfg, nube.tomar_trabajo(), cliente=cliente) == "listo"
+    assert list(recibido) == [9] and Path(recibido[9][0]).exists()
+    with nube.cursor() as cur:
+        cur.execute("SELECT persona_id, origen FROM fotos_persona WHERE origen='partido'")
+        nuevas = cur.fetchall()
+    # El servidor falso lee al 4 y al 9 con confianza alta: quedan en su álbum.
+    assert {p for p, _ in nuevas} == {personas[4], personas[9]}
+    # Analizar de nuevo no duplica las de este partido.
+    with nube.cursor() as cur:
+        cur.execute("INSERT INTO trabajos (partido_id) VALUES (%s)", (pid,))
+    trabajador.procesar(nube, db, cfg, nube.tomar_trabajo(), cliente=cliente)
+    with nube.cursor() as cur:
+        cur.execute("SELECT count(*) FROM fotos_persona WHERE origen='partido'")
+        assert cur.fetchone()[0] == len(nuevas)
