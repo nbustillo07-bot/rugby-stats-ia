@@ -64,7 +64,10 @@ class Nube:
             raise ErrorNube("Falta la librería psycopg: corré 1_instalar.bat.") from exc
         self._psycopg = psycopg
         self.url = url or url_base()
-        self.con = psycopg.connect(self.url, autocommit=True, connect_timeout=20)
+        # prepare_threshold=None: sin sentencias preparadas, para que ande
+        # también a través del "pooler" de Neon (la dirección DATABASE_URL).
+        self.con = psycopg.connect(self.url, autocommit=True, connect_timeout=20,
+                                   prepare_threshold=None)
 
     def cerrar(self) -> None:
         try:
