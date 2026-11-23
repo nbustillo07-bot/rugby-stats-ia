@@ -61,6 +61,32 @@ tabla, no un relato.
 
 ---
 
+## La app web (Vercel) y la compu como trabajador
+
+Además de la interfaz local, hay una app web en `web/` para usar desde el
+teléfono o cualquier compu, con un link y contraseña:
+
+1. En la app: **Nuevo partido** → link de YouTube, tramo, equipo y plantel →
+   **Analizar**.
+2. La compu (`7_trabajador.bat`, o sola al prender si corriste
+   `8_arrancar_con_windows.bat`) ve el pedido, baja el video, analiza con
+   Claude y va subiendo el avance.
+3. Cuando termina, el partido se pone **en verde**: tabla de tackles por
+   jugador, revisión con los 3 candidatos y su foto, y **Bajar Excel**.
+
+¿Por qué la compu y no un servidor? YouTube bloquea las descargas desde
+servidores en la nube (se probó desde GitHub: pide iniciar sesión). Desde
+una conexión de casa baja normal.
+
+La app y la compu se hablan por una base Postgres en la nube (la de Vercel →
+Storage). La compu nunca recibe conexiones: pregunta cada 10 segundos si hay
+algo para hacer. Mientras analiza no se duerme, y si se apaga a mitad, al
+volver sigue donde quedó.
+
+**Variables:** en Vercel, `DATABASE_URL` (la pone sola la base) y
+`APP_PASSWORD` (la contraseña de la app). En el `.env` de la compu,
+`ANTHROPIC_API_KEY` y la misma `DATABASE_URL`.
+
 ## Instalación
 
 ### En Windows, con doble clic

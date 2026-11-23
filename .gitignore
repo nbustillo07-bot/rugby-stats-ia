@@ -4,6 +4,7 @@
 # Datos del usuario: partidos, caché de la API, videos y salidas
 data/*.db
 data/cupos.json
+data/trabajador.log
 data/partidos.db-journal
 data/cache/
 data/video/

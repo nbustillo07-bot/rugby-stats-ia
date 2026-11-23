@@ -1,0 +1,144 @@
+"""La compu como trabajador de la app web, contra un Postgres de prueba.
+
+Se corre si hay una base de prueba en ``RUGBY_PG_PRUEBA`` (por ejemplo
+``postgresql://postgres@localhost:5433/postgres``). Cada prueba usa una base
+nueva y la borra al final.
+"""
+
+from __future__ import annotations
+
+import os
+import uuid
+
+import pytest
+
+psycopg = pytest.importorskip("psycopg")
+URL = os.environ.get("RUGBY_PG_PRUEBA", "")
+pytestmark = pytest.mark.skipif(not URL, reason="sin RUGBY_PG_PRUEBA")
+
+from rugby_stats.nube import Nube  # noqa: E402
+from scripts import trabajador  # noqa: E402
+from tests.test_claude import (  # noqa: E402
+    armar_cliente,
+    cfg_claude,
+    servidor_por_esquema,
+    video,  # noqa: F401 - fixture
+)
+
+
+@pytest.fixture
+def nube():
+    nombre = "prueba_" + uuid.uuid4().hex[:8]
+    with psycopg.connect(URL, autocommit=True) as con:
+        con.execute(f"CREATE DATABASE {nombre}")
+    url = URL.rsplit("/", 1)[0] + "/" + nombre
+    n = Nube(url)
+    n.preparar()
+    yield n
+    n.cerrar()
+    with psycopg.connect(URL, autocommit=True) as con:
+        con.execute(f"DROP DATABASE {nombre} WITH (FORCE)")
+
+
+def cargar_partido(nube: Nube, video_url: str) -> tuple[int, int]:
+    with nube.cursor() as cur:
+        cur.execute(
+            """INSERT INTO partidos (nombre, equipo_propio, kit_propio, legible_propio,
+               equipo_rival, kit_rival, video_url, desde_s, hasta_s, estado)
+               VALUES ('Club A vs Club B','Club A','rayas','baja','Club B','liso',%s,20,80,'en_cola')
+               RETURNING id""",
+            (video_url,),
+        )
+        pid = cur.fetchone()[0]
+        for n in range(1, 16):
+            cur.execute(
+                "INSERT INTO jugadores (partido_id, numero, nombre) VALUES (%s,%s,%s)",
+                (pid, n, f"Jugador {n}"),
+            )
+        cur.execute("INSERT INTO trabajos (partido_id) VALUES (%s) RETURNING id", (pid,))
+        tid = cur.fetchone()[0]
+    return pid, tid
+
+
+def test_el_pedido_de_la_app_se_analiza_y_queda_en_verde(nube, db, video, tmp_path):
+    pid, _ = cargar_partido(nube, str(video))
+    cfg = cfg_claude(tmp_path)
+    cliente, vistos = armar_cliente(tmp_path, servidor_por_esquema)
+    trabajo = nube.tomar_trabajo()
+    assert trabajo and trabajo.partido_id == pid
+    assert nube.partido(pid)["estado"] == "corriendo"
+    assert trabajador.procesar(nube, db, cfg, trabajo, cliente=cliente) == "listo"
+
+    p = nube.partido(pid)
+    assert p["estado"] == "listo" and p["avance"] == 1.0
+    assert p["gasto_usd"] > 0 and "tackles" in p["mensaje"]
+    assert p["local_id"] and p["estimado_usd"] is not None
+    with nube.cursor() as cur:
+        cur.execute("SELECT accion, jugador_numero, jugador_modelo FROM eventos WHERE partido_id=%s", (pid,))
+        eventos = cur.fetchall()
+        cur.execute("SELECT count(*) FROM fotos WHERE partido_id=%s", (pid,))
+        fotos = cur.fetchone()[0]
+        cur.execute("SELECT estado FROM trabajos WHERE partido_id=%s", (pid,))
+        assert cur.fetchone()[0] == "listo"
+    assert any(a == "Tackle" and n == 4 and m == 4 for a, n, m in eventos)
+    assert fotos >= 1
+    assert nube.tomar_trabajo() is None
+
+
+def test_lo_revisado_en_la_app_no_se_pisa(nube, db, video, tmp_path):
+    pid, _ = cargar_partido(nube, str(video))
+    cfg = cfg_claude(tmp_path)
+    cliente, _ = armar_cliente(tmp_path, servidor_por_esquema)
+    trabajador.procesar(nube, db, cfg, nube.tomar_trabajo(), cliente=cliente)
+    with nube.cursor() as cur:
+        cur.execute("SELECT count(*) FROM eventos WHERE partido_id=%s AND accion='Tackle'", (pid,))
+        antes = cur.fetchone()[0]
+        cur.execute(
+            "UPDATE eventos SET jugador_numero=7, revisado=true WHERE id = (SELECT min(id) "
+            "FROM eventos WHERE partido_id=%s AND accion='Tackle') RETURNING id", (pid,))
+        revisado = cur.fetchone()[0]
+        cur.execute("INSERT INTO trabajos (partido_id) VALUES (%s)", (pid,))
+    trabajador.procesar(nube, db, cfg, nube.tomar_trabajo(), cliente=cliente)
+    with nube.cursor() as cur:
+        cur.execute("SELECT jugador_numero, revisado FROM eventos WHERE id=%s", (revisado,))
+        assert cur.fetchone() == (7, True)
+        cur.execute("SELECT count(*) FROM eventos WHERE partido_id=%s AND accion='Tackle'", (pid,))
+        assert cur.fetchone()[0] == antes  # el nuevo de ese momento no se duplicó
+
+
+def test_sin_clave_en_la_compu_avisa_en_la_app(nube, db, video, tmp_path):
+    from rugby_stats.gemini.cliente import ClienteSimulado
+
+    pid, _ = cargar_partido(nube, str(video))
+    estado = trabajador.procesar(nube, db, cfg_claude(tmp_path), nube.tomar_trabajo(),
+                                 cliente=ClienteSimulado())
+    assert estado == "error"
+    assert "ANTHROPIC_API_KEY" in nube.partido(pid)["mensaje"]
+
+
+def test_si_la_compu_se_apago_a_mitad_vuelve_a_la_cola(nube, video):
+    pid, tid = cargar_partido(nube, str(video))
+    assert nube.tomar_trabajo().id == tid
+    assert nube.recuperar_colgados() == 1
+    assert nube.partido(pid)["estado"] == "en_cola"
+    assert nube.tomar_trabajo().id == tid
+
+
+def test_cancelar_desde_la_app(nube, db, video, tmp_path, monkeypatch):
+    pid, tid = cargar_partido(nube, str(video))
+    cfg = cfg_claude(tmp_path)
+    cliente, _ = armar_cliente(tmp_path, servidor_por_esquema)
+    trabajo = nube.tomar_trabajo()
+    with nube.cursor() as cur:
+        cur.execute("UPDATE trabajos SET estado='cancelado' WHERE id=%s", (tid,))
+    reloj = iter(range(0, 100000, 20))
+    monkeypatch.setattr(trabajador.time, "monotonic", lambda: float(next(reloj)))
+    assert trabajador.procesar(nube, db, cfg, trabajo, cliente=cliente) == "cancelado"
+    assert nube.partido(pid)["estado"] == "cancelado"
+
+
+def test_latido(nube):
+    nube.latido("esperando pedidos")
+    with nube.cursor() as cur:
+        cur.execute("SELECT estado, ultimo_latido IS NOT NULL FROM compu")
+        assert cur.fetchone() == ("esperando pedidos", True)

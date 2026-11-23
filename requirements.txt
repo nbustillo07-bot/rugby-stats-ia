@@ -5,7 +5,8 @@ streamlit>=1.49              # la interfaz (hace falta >=1.49 por el parámetro 
 openpyxl>=3.1                # el Excel con fórmulas
 PyYAML>=6.0                  # config.yaml
 pandas>=2.0                  # tablas de la interfaz
-Pillow>=10.0                 # recortar las fotos de cada jugador
+Pillow>=10.1                 # recortar las fotos de cada jugador
+psycopg[binary]>=3.1         # hablar con la base de la app web (trabajador)
 
 # Video
 #   yt-dlp         -> bajar videos de YouTube (solo el tramo que hace falta) y

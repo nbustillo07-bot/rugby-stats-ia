@@ -421,10 +421,18 @@ def _combinar_contactos(
                 db.guardar_evento(partido_id, nuevo)
 
 
+class Interrumpir(Exception):
+    """Lo levanta quien muestra el avance para cortar el análisis (p. ej.
+    porque lo cancelaron desde la app). Es lo único que corta: cualquier otro
+    error al mostrar el avance se ignora."""
+
+
 def _avisar(progreso, texto: str, fraccion: float) -> None:
     if progreso:
         try:
             progreso(texto, fraccion)
+        except Interrumpir:
+            raise
         except Exception:  # noqa: BLE001 - la barra de progreso no frena el análisis
             pass
 
