@@ -92,8 +92,10 @@ def correr(
     """
     previo = db.gasto_partido(partido_id)
     empezar = getattr(cliente, "empezar_partido", None)
+    # El tope es por corrida: cada vez que alguien aprieta "analizar" o
+    # "rehacer" puede gastar hasta el tope, sin contar lo de corridas viejas.
     if empezar is not None:
-        empezar(previo, cfg.tope_usd_por_partido)
+        empezar(0.0, cfg.tope_usd_por_partido)
     gasto = 0.0
     try:
         res = _correr(db, cliente, partido_id, cfg, pasos, forzar, progreso, album)
@@ -106,7 +108,7 @@ def correr(
             )
             # Para que si el mismo cliente se usa otra vez no se cuente doble.
             if empezar is not None:
-                empezar(previo + gasto, cfg.tope_usd_por_partido)
+                empezar(gasto, cfg.tope_usd_por_partido)
     res.gasto_usd = gasto
     res.gasto_total_usd = previo + gasto
     return res

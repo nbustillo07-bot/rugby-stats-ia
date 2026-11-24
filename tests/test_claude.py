@@ -581,12 +581,11 @@ class TestPuntaAPunta:
             pipeline.correr(db, c, partido_local.id, cfg)
         gastado = db.gasto_partido(partido_local.id)
         assert 0 < gastado <= 0.05
-        # Al volver a correr, el tope cuenta lo ya gastado: no arranca de cero.
-        antes = len(vistos)
+        # El tope es por corrida: al volver a correr, puede gastar otro tope
+        # (y no más), siguiendo desde donde quedó.
         with pytest.raises(TopeDeGastoAlcanzado):
             pipeline.correr(db, c, partido_local.id, cfg)
-        assert db.gasto_partido(partido_local.id) <= 0.05 + 1e-9
-        assert len(vistos) - antes <= 1
+        assert gastado < db.gasto_partido(partido_local.id) <= 0.10 + 1e-9
 
     def test_lo_gastado_no_se_cuenta_doble_si_se_reusa_el_cliente(
         self, db, partido_local, tmp_path

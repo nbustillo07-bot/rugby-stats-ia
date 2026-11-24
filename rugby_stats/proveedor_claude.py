@@ -248,7 +248,7 @@ class ClienteClaude:
         total = self.gasto_previo_usd + self.gasto_usd
         if total + estimado > self.tope_usd:
             raise TopeDeGastoAlcanzado(
-                f"Se llegó al tope de gasto de este partido: van US$ {total:.2f} "
+                f"Se llegó al tope de gasto de esta corrida: van US$ {total:.2f} "
                 f"de US$ {self.tope_usd:.2f}, y el próximo pedido costaría unos "
                 f"US$ {estimado:.2f}. No se mandó. Lo analizado hasta acá quedó "
                 "guardado. Si querés seguir, subí 'tope_usd_por_partido' en "
